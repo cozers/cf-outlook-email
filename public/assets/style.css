@@ -455,6 +455,20 @@ tr:hover td { background: var(--bg-hover); }
 }
 .toolbar .search-input:focus, .email-toolbar .search-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-bg); }
 
+/* Email link (account row → jump to that account's mailbox) */
+.email-link {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 13px;
+  color: var(--primary-light);
+  cursor: pointer;
+  border-bottom: 1px solid transparent;
+  transition: color var(--transition), border-color var(--transition);
+}
+.email-link:hover {
+  color: var(--primary);
+  border-bottom-color: var(--border-focus);
+}
+
 /* Color Dot */
 .color-dot {
   display: inline-block; width: 8px; height: 8px;

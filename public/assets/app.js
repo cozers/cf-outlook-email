@@ -275,7 +275,7 @@ async function renderAccounts(el, actions) {
   actions.innerHTML = `
     <button class="btn btn-primary btn-sm" onclick="showAddAccountModal()">+ 添加账号</button>
     <button class="btn btn-sm" onclick="showImportModal()">批量导入</button>
-    <button class="btn btn-sm" onclick="exportAccounts()">导出</button>
+    <button class="btn btn-sm" onclick="exportAccounts()">导出全部</button>
   `;
 
   const toolbar = `<div class="toolbar">
@@ -298,6 +298,7 @@ async function renderAccounts(el, actions) {
     <button class="btn btn-sm" onclick="batchAction('move')">移动分组</button>
     <button class="btn btn-sm" onclick="batchAction('enable')">批量启用</button>
     <button class="btn btn-sm" onclick="batchAction('disable')">批量停用</button>
+    <button class="btn btn-sm" onclick="exportSelected()">导出选中</button>
     <button class="btn btn-sm btn-danger" onclick="batchAction('delete')">批量删除</button>
     <button class="btn btn-sm" onclick="clearSelection()">取消选择</button>
   </div>`;
@@ -323,9 +324,8 @@ function renderAccountRows(accounts) {
     <td><input type="checkbox" class="acc-check" value="${a.id}" onchange="onAccountCheck()" ${selectedAccountIds.has(a.id) ? 'checked' : ''}></td>
     <td>
       <div style="display:flex;align-items:center;gap:6px">
-        <span style="font-family:monospace;font-size:13px">${esc(a.email)}</span>
+        <a class="email-link" onclick="goToEmail(${a.id})" title="查看该账号邮件">${esc(a.email)}</a>
         <button class="btn btn-sm" style="padding:2px 6px;font-size:10px;opacity:0.6" onclick="copyText('${esc(a.email)}',this)" title="复制邮箱">复制</button>
-        <button class="btn btn-sm" style="padding:2px 6px;font-size:10px;opacity:0.6" onclick="goToEmail(${a.id})" title="查看邮件">📬</button>
       </div>
     </td>
     <td><span class="color-dot" style="background:${esc(a.group_color)}"></span>${esc(a.group_name)}</td>
@@ -334,6 +334,7 @@ function renderAccountRows(accounts) {
     <td style="white-space:nowrap">
       <button class="btn btn-sm" onclick="showEditAccountModal(${a.id})">编辑</button>
       <button class="btn btn-sm" onclick="testAccount(${a.id},this)">测试</button>
+      <button class="btn btn-sm" onclick="exportAccounts([${a.id}])">导出</button>
       <button class="btn btn-sm" onclick="toggleAccountStatus(${a.id},'${a.status}')">${a.status === 'active' ? '停用' : '启用'}</button>
       <button class="btn btn-sm btn-danger" onclick="deleteAccount(${a.id})">删除</button>
     </td>
@@ -356,11 +357,16 @@ function goToEmail(accountId) {
   navigate('emails');
 }
 
-// Export accounts
-async function exportAccounts() {
-  const groupFilter = document.getElementById('accountGroupFilter')?.value;
+// Export accounts. Pass an array of ids to export specific rows (single or selected);
+// omit to export all (respecting the current group filter).
+async function exportAccounts(ids) {
   let url = '/accounts/export';
-  if (groupFilter) url += '?group_id=' + groupFilter;
+  if (Array.isArray(ids) && ids.length) {
+    url += '?ids=' + ids.join(',');
+  } else {
+    const groupFilter = document.getElementById('accountGroupFilter')?.value;
+    if (groupFilter) url += '?group_id=' + groupFilter;
+  }
   const res = await api(url);
   if (!res?.success || !res.data?.content) { toast('没有可导出的账号', 'error'); return; }
 
@@ -374,6 +380,13 @@ async function exportAccounts() {
       <button class="btn btn-sm" type="button" onclick="downloadExport()">下载 TXT</button>
     </div>
   `, () => true);
+}
+
+// Export currently selected accounts (from the batch bar)
+function exportSelected() {
+  const ids = [...selectedAccountIds];
+  if (!ids.length) { toast('请先选择账号', 'error'); return; }
+  exportAccounts(ids);
 }
 
 function downloadExport() {

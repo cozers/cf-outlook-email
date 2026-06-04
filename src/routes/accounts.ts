@@ -127,9 +127,19 @@ accounts.post('/', async (c) => {
 // MUST be before /:id to avoid being matched as id="export"
 accounts.get('/export', async (c) => {
   const groupId = c.req.query('group_id');
+  const idsParam = c.req.query('ids');
   let sql = 'SELECT email, password, client_id, refresh_token FROM accounts';
   const params: unknown[] = [];
-  if (groupId) {
+  // `ids` (comma-separated) takes precedence — used for single-row and selected exports
+  if (idsParam) {
+    const ids = idsParam
+      .split(',')
+      .map((s) => parseInt(s, 10))
+      .filter((n) => Number.isInteger(n));
+    if (!ids.length) return ok({ content: '', count: 0 });
+    sql += ` WHERE id IN (${ids.map(() => '?').join(',')})`;
+    params.push(...ids);
+  } else if (groupId) {
     sql += ' WHERE group_id = ?';
     params.push(parseInt(groupId, 10));
   }
