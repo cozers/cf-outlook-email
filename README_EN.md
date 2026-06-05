@@ -90,11 +90,21 @@ Works with all Outlook / Hotmail / Live accounts. Bulk import supported (format:
 
 ## 🗺️ Roadmap
 
-Done & planned:
+**Core features (implemented)**
 
+- [x] 🔐 One-click OAuth & auto token refresh
+- [x] 👤 Account management (CRUD, connection test)
+- [x] 🗂️ Group management (custom colors, group & status filters)
+- [x] 📦 Bulk import / export / delete / move
+- [x] 📤 Per-row & selected export
+- [x] 📨 Email reading (live fetch, search, HTML rendering)
 - [x] 📁 Folder switching (Inbox / Junk / Deleted)
 - [x] 📄 Paginated load-more
-- [x] 📤 Per-row & selected export
+- [x] 📭 Temp email (GPTMail integration)
+- [x] 🎨 Theme switching + circle-swoop transition + breathing glow
+
+**Planned (PRs welcome)**
+
 - [ ] 🔀 Aggregated view (Inbox + Junk merged by time)
 - [ ] 🗑️ Delete emails (single / batch)
 - [ ] 📎 Attachment download
