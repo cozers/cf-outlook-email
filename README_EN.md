@@ -27,9 +27,9 @@
 
 - 🔐 **One-Click OAuth** — Authorize Outlook accounts via browser popup, no manual token copying
 - 🔄 **Auto Token Refresh** — Automatically saves new refresh tokens on each use, preventing expiry
-- 📦 **Batch Operations** — Import/export/delete/move accounts in bulk with group & status filters
-- 📨 **Email Reading** — Read inbox via Microsoft Graph API with search and HTML rendering
-- 🪄 **Temp Email** — GPTMail API integration for disposable email addresses
+- 📦 **Batch Operations** — Import/export/delete/move in bulk, including per-row & selected export, with group & status filters
+- 📨 **Email Reading** — Read inbox / junk / deleted via Microsoft Graph API with folder switching, paginated load-more, search and HTML rendering
+- 📭 **Temp Email** — GPTMail API integration for disposable email addresses
 - 🎨 **Polished Themes** — Dark / Light / Auto with glassmorphism, circle-swoop transition & ambient breathing glow
 - 🆓 **Completely Free** — Runs on Cloudflare's free tier, no credit card needed
 
@@ -87,6 +87,23 @@ Works with all Outlook / Hotmail / Live accounts. Bulk import supported (format:
 | ⏱️ CPU Time | 10ms/req | ✅ |
 | 🌐 Subrequests | 50/req | ✅ (single account per request) |
 | 💾 D1 Storage | 5 GB | ✅ |
+
+## 🗺️ Roadmap
+
+Done & planned:
+
+- [x] 📁 Folder switching (Inbox / Junk / Deleted)
+- [x] 📄 Paginated load-more
+- [x] 📤 Per-row & selected export
+- [ ] 🔀 Aggregated view (Inbox + Junk merged by time)
+- [ ] 🗑️ Delete emails (single / batch)
+- [ ] 📎 Attachment download
+- [ ] 🏷️ Tag system
+- [ ] 🔑 External API + API Key (programmatic verification-code fetching)
+- [ ] ⏰ Scheduled token refresh (Cron Trigger)
+- [ ] 🤖 Telegram push for new emails
+
+> ⚠️ Due to Cloudflare Workers platform limits, the following are not feasible: IMAP (Gmail / QQ / 163 and other non-Microsoft mailboxes), SMTP forwarding, HTTP/SOCKS5 proxy.
 
 ## ⚠️ Disclaimer
 
