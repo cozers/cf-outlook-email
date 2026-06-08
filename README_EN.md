@@ -110,9 +110,10 @@ Works with all Outlook / Hotmail / Live accounts. Bulk import supported (format:
 
 - [x] 🔑 External API + API Key (login-free email fetch for automation, see [API Docs](./docs/API.md))
 
+- [x] 🗑️ Delete emails (single / batch, soft-delete to Deleted Items)
+
 **Planned (PRs welcome)**
 
-- [ ] 🗑️ Delete emails (single / batch)
 - [ ] 📎 Attachment download
 - [ ] 🏷️ Tag system
 - [ ] ⏰ Scheduled token refresh (Cron Trigger)
