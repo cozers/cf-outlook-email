@@ -108,12 +108,13 @@ Works with all Outlook / Hotmail / Live accounts. Bulk import supported (format:
 - [x] 📭 Temp email (GPTMail integration)
 - [x] 🎨 Theme switching + circle-swoop transition + breathing glow
 
+- [x] 🔑 External API + API Key (login-free email fetch for automation, see [API Docs](./docs/API.md))
+
 **Planned (PRs welcome)**
 
 - [ ] 🗑️ Delete emails (single / batch)
 - [ ] 📎 Attachment download
 - [ ] 🏷️ Tag system
-- [ ] 🔑 External API + API Key (programmatic verification-code fetching)
 - [ ] ⏰ Scheduled token refresh (Cron Trigger)
 - [ ] 🤖 Telegram push for new emails
 
