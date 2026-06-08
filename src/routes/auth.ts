@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
-import { ok, badRequest } from '../response';
+import { ok, badRequest, fail } from '../response';
 import { verifyPassword, issueSessionCookie, buildSetCookie, buildClearCookie, verifySession } from '../auth';
 
 const auth = new Hono<{ Bindings: Env }>();
@@ -12,6 +12,15 @@ auth.post('/login', async (c) => {
 
   if (!password) {
     return badRequest('请输入密码');
+  }
+
+  // Misconfig guard: COOKIE_SECRET is always required to sign the session
+  if (!c.env.COOKIE_SECRET) {
+    return fail(
+      'CONFIG_MISSING',
+      '服务端未配置 COOKIE_SECRET：请运行 wrangler secret put COOKIE_SECRET',
+      500
+    );
   }
 
   const valid = await verifyPassword(c.env.DB, password, c.env.ADMIN_PASSWORD);
