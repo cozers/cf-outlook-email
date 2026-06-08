@@ -770,8 +770,8 @@ async function renderEmails(el, actions) {
           <option value="deleteditems">已删除</option>
           <option value="all">全部（收件箱+垃圾箱）</option>
         </select>
-        <button class="btn btn-sm" onclick="copySelectedEmail(this)" title="复制当前邮箱地址">复制邮箱</button>
-        <button class="btn btn-sm" onclick="refreshEmails()">刷新</button>
+        <button class="btn" onclick="copySelectedEmail(this)" title="复制当前邮箱地址">复制邮箱</button>
+        <button class="btn" onclick="refreshEmails()">刷新</button>
         <input class="search-input" id="emailSearch" placeholder="搜索邮件..." onkeydown="if(event.key==='Enter')searchEmails()">
         <span style="flex:1"></span>
         <span style="font-size:12px;color:var(--text-dim)" id="emailCount"></span>
@@ -1096,8 +1096,8 @@ async function renderSettings(el) {
       <div class="form-group">
         <label class="form-label">API Key</label>
         <div style="display:flex;gap:8px">
-          <input class="form-input" id="sExternalKey" readonly value="${esc(settings.external_api_key || '')}" placeholder="未启用（点右侧生成）" style="flex:1;font-family:monospace;font-size:12px">
-          <button class="btn btn-sm" type="button" onclick="copyText(document.getElementById('sExternalKey').value, this)" ${settings.external_api_key ? '' : 'disabled'}>复制</button>
+          <input class="form-input" id="sExternalKey" readonly value="${esc(settings.external_api_key || '')}" placeholder="未启用（点下方「生成 API Key」）" style="flex:1;font-family:monospace;font-size:12px">
+          <button class="btn" type="button" onclick="copyText(document.getElementById('sExternalKey').value, this)" ${settings.external_api_key ? '' : 'disabled'}>复制</button>
         </div>
       </div>
       ${settings.external_api_key ? `<div class="form-group">
@@ -1105,8 +1105,8 @@ async function renderSettings(el) {
         <input class="form-input" readonly value="${location.origin}/api/external/emails?email=你的邮箱&key=${esc(settings.external_api_key)}" style="font-family:monospace;font-size:11px" onclick="this.select()">
       </div>` : ''}
       <div style="display:flex;gap:8px">
-        <button class="btn btn-primary btn-sm" type="button" onclick="generateApiKey()">${settings.external_api_key ? '重新生成' : '生成 API Key'}</button>
-        ${settings.external_api_key ? '<button class="btn btn-sm btn-danger" type="button" onclick="clearApiKey()">停用</button>' : ''}
+        <button class="btn btn-primary" type="button" onclick="generateApiKey()">${settings.external_api_key ? '重新生成' : '生成 API Key'}</button>
+        ${settings.external_api_key ? '<button class="btn btn-danger" type="button" onclick="clearApiKey()">停用</button>' : ''}
       </div>
     </div>
   `;
