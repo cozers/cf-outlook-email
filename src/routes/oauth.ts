@@ -49,6 +49,49 @@ oauth.get('/authorize', async (c) => {
   return ok({ url: authUrl, client_id: clientId });
 });
 
+// POST /api/oauth/exchange - manual flow: exchange a code obtained via the
+// https://localhost redirect (registered for the Thunderbird public client),
+// so users can authorize WITHOUT registering their own Azure app.
+oauth.post('/exchange', async (c) => {
+  const loggedIn = await checkSession(c.req.header('Cookie'), c.env.COOKIE_SECRET);
+  if (!loggedIn) return unauthorized();
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    code?: string;
+    client_id?: string;
+    redirect_uri?: string;
+  };
+  const code = body.code?.trim();
+  if (!code) return badRequest('请提供授权码 code');
+
+  const clientId = body.client_id?.trim() || DEFAULT_CLIENT_ID;
+  const redirectUri = body.redirect_uri?.trim() || 'https://localhost';
+
+  try {
+    const tokenRes = await fetch(TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId,
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: redirectUri,
+        scope: 'Mail.Read offline_access',
+      }).toString(),
+    });
+
+    const data = (await tokenRes.json()) as Record<string, unknown>;
+    if (!tokenRes.ok || !data.refresh_token) {
+      const errMsg = (data.error_description as string) || (data.error as string) || 'Token exchange failed';
+      return badRequest(`换取令牌失败: ${errMsg}`);
+    }
+
+    return ok({ client_id: clientId, refresh_token: data.refresh_token as string });
+  } catch (e) {
+    return badRequest(`网络错误: ${e instanceof Error ? e.message : 'unknown'}`);
+  }
+});
+
 // GET /api/oauth/callback - Microsoft redirects here with ?code=
 // This is opened in a browser tab, so we return HTML that posts the result back
 oauth.get('/callback', async (c) => {

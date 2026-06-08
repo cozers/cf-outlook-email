@@ -92,13 +92,13 @@ async function api(path, options = {}) {
   return data;
 }
 
-function toast(msg, type = 'success') {
+function toast(msg, type = 'success', duration = 3000) {
   const container = document.getElementById('toastContainer');
   const el = document.createElement('div');
   el.className = `toast toast-${type}`;
   el.textContent = msg;
   container.appendChild(el);
-  setTimeout(() => el.remove(), 3000);
+  setTimeout(() => el.remove(), duration);
 }
 
 // ========== Auth ==========
@@ -499,7 +499,21 @@ function showAddAccountModal() {
         <input class="form-input" id="mOAuthEmail" placeholder="输入邮箱地址（可选，用于自动登录）" style="flex:1">
         <button class="btn btn-primary btn-sm" type="button" onclick="startOAuth()" style="white-space:nowrap">一键授权</button>
       </div>
-      <div style="font-size:11px;color:var(--text-dim);margin-top:8px;line-height:1.6">点击后会弹出微软登录窗口，登录并授权后自动填入 Client ID 和 Refresh Token。<br>支持任何 Outlook / Hotmail / Live 邮箱，使用 Thunderbird 公开应用授权。</div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:8px;line-height:1.6">点击后弹出微软登录窗口，授权成功后自动填入 Client ID 和 Refresh Token。<br><b style="color:var(--warning)">⚠️ 网页一键授权需注册自己的 Azure 应用</b>：默认 Thunderbird 公开 ID 仅用于桌面端，无法在网页授权（会报 redirect_uri 错误）。请把下面这个<b>回调地址</b>登记到你的 Azure 应用，并在下方 Client ID 填入你自己的应用 ID。</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
+        <input class="form-input" id="oauthRedirect" readonly value="${location.origin}/api/oauth/callback" style="flex:1;font-size:11px;font-family:monospace">
+        <button class="btn btn-sm" type="button" onclick="copyText(document.getElementById('oauthRedirect').value,this)" style="white-space:nowrap">复制回调地址</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:6px;line-height:1.6">注册步骤见 <a href="https://github.com/roseforyou/cf-outlook-email/blob/main/docs/GUIDE.md#自己注册-azure-应用" target="_blank">部署教程</a>。若已有现成的 refresh_token，直接用「批量导入」或在下方手动填入即可，无需授权。</div>
+    </div>
+    <div style="background:var(--bg-hover);border:1px solid var(--border-light);border-radius:10px;padding:14px;margin-bottom:16px">
+      <div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;font-weight:550">方式二：手动授权（免注册 Azure，用默认 Thunderbird ID）</div>
+      <div style="font-size:11px;color:var(--text-dim);line-height:1.7">① 点「打开授权页」登录并授权 → 浏览器会跳到一个打不开的 <code>https://localhost</code> 页面（<b>正常现象</b>）<br>② 复制浏览器<b>地址栏的完整网址</b>（含 <code>?code=...</code>）粘到下面 → ③ 点「提取并获取 Token」自动填入</div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn btn-sm" type="button" onclick="openManualAuth()" style="white-space:nowrap">① 打开授权页</button>
+        <input class="form-input" id="manualAuthUrl" placeholder="② 粘贴跳转后的完整地址（或仅 code）" style="flex:1">
+        <button class="btn btn-primary btn-sm" type="button" onclick="exchangeManualCode(this)" style="white-space:nowrap">③ 获取 Token</button>
+      </div>
     </div>
     <div class="form-group"><label class="form-label">邮箱</label><input class="form-input" id="mAccEmail" placeholder="example@outlook.com"></div>
     <div class="form-group">
@@ -555,6 +569,48 @@ async function startOAuth(loginHintOverride) {
   if (!popup) { toast('请允许弹窗，或检查浏览器是否拦截了弹窗', 'error'); return; }
 }
 
+// Manual flow (no Azure app needed): open the authorize page with the
+// https://localhost redirect, which is registered for the Thunderbird client.
+function openManualAuth() {
+  const clientId = document.getElementById('mAccClientId')?.value?.trim() || THUNDERBIRD_CLIENT_ID;
+  const loginHint = document.getElementById('mOAuthEmail')?.value?.trim() || '';
+  const params = new URLSearchParams({
+    client_id: clientId,
+    response_type: 'code',
+    redirect_uri: 'https://localhost',
+    scope: 'Mail.Read offline_access',
+    response_mode: 'query',
+  });
+  if (loginHint) params.set('login_hint', loginHint);
+  window.open('https://login.microsoftonline.com/common/oauth2/v2.0/authorize?' + params.toString(), '_blank');
+}
+
+// Take the pasted redirect URL (or raw code), exchange it for a refresh_token server-side
+async function exchangeManualCode(btn) {
+  const raw = document.getElementById('manualAuthUrl')?.value?.trim() || '';
+  if (!raw) { toast('请粘贴跳转后的完整地址或 code', 'error'); return; }
+
+  // Accept either a full URL containing ?code=... or a bare code
+  let code = raw;
+  const m = raw.match(/[?&]code=([^&\s]+)/);
+  if (m) code = decodeURIComponent(m[1]);
+
+  const clientId = document.getElementById('mAccClientId')?.value?.trim() || THUNDERBIRD_CLIENT_ID;
+  if (btn) { btn.disabled = true; btn.textContent = '获取中...'; }
+  const res = await api('/oauth/exchange', {
+    method: 'POST',
+    body: JSON.stringify({ code, client_id: clientId, redirect_uri: 'https://localhost' }),
+  });
+  if (btn) { btn.disabled = false; btn.textContent = '③ 获取 Token'; }
+
+  if (!res?.success) { toast(res?.error?.message || '获取 Token 失败', 'error', 6000); return; }
+  const cidInput = document.getElementById('mAccClientId');
+  const tokInput = document.getElementById('mAccToken');
+  if (cidInput) cidInput.value = res.data.client_id || clientId;
+  if (tokInput) tokInput.value = res.data.refresh_token || '';
+  toast('已获取 Refresh Token 并自动填入');
+}
+
 // Listen for OAuth callback message from popup
 window.addEventListener('message', function(e) {
   if (e.data?.type !== 'oauth-callback') return;
@@ -566,7 +622,13 @@ window.addEventListener('message', function(e) {
     if (tokenInput) tokenInput.value = d.refresh_token || '';
     toast('授权成功，已自动填入 Client ID 和 Refresh Token');
   } else {
-    toast(e.data.error || '授权失败', 'error');
+    const err = e.data.error || '授权失败';
+    // The most common failure: default Thunderbird client_id rejects the worker's redirect_uri
+    if (/redirect_uri|invalid_request/i.test(err)) {
+      toast('授权失败：默认 Client ID 不支持网页授权。请注册自己的 Azure 应用，把弹窗里的回调地址登记进去，并在 Client ID 填入你的应用 ID（详见添加账号弹窗的说明）。', 'error', 9000);
+    } else {
+      toast(err, 'error', 6000);
+    }
   }
 });
 
