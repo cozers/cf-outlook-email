@@ -112,9 +112,10 @@ Works with all Outlook / Hotmail / Live accounts. Bulk import supported (format:
 
 - [x] 🗑️ Delete emails (single / batch, soft-delete to Deleted Items)
 
+- [x] 📎 Attachment download
+
 **Planned (PRs welcome)**
 
-- [ ] 📎 Attachment download
 - [ ] 🏷️ Tag system
 - [ ] ⏰ Scheduled token refresh (Cron Trigger)
 - [ ] 🤖 Telegram push for new emails

@@ -199,6 +199,48 @@ export async function deleteEmail(
   }
 }
 
+export interface GraphAttachment {
+  id: string;
+  name: string;
+  contentType: string;
+  size: number;
+  contentBytes?: string; // base64, present when fetching a single fileAttachment
+}
+
+// List attachments metadata for a message
+export async function listAttachments(
+  accessToken: string,
+  messageId: string
+): Promise<{ items?: GraphAttachment[]; error?: GraphError }> {
+  const url = `${GRAPH_BASE}/me/messages/${messageId}/attachments?$select=id,name,contentType,size`;
+  try {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!res.ok) return { error: { code: 'GRAPH_ERROR', message: `获取附件列表失败: ${res.status}` } };
+    const data = (await res.json()) as { value: GraphAttachment[] };
+    return { items: data.value ?? [] };
+  } catch (e) {
+    return { error: { code: 'NETWORK_ERROR', message: e instanceof Error ? e.message : 'unknown' } };
+  }
+}
+
+// Fetch a single attachment (includes base64 contentBytes for fileAttachment)
+export async function getAttachment(
+  accessToken: string,
+  messageId: string,
+  attachmentId: string
+): Promise<{ attachment?: GraphAttachment; error?: GraphError }> {
+  const url = `${GRAPH_BASE}/me/messages/${messageId}/attachments/${attachmentId}`;
+  try {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (res.status === 404) return { error: { code: 'NOT_FOUND', message: '附件不存在' } };
+    if (!res.ok) return { error: { code: 'GRAPH_ERROR', message: `获取附件失败: ${res.status}` } };
+    const data = (await res.json()) as GraphAttachment;
+    return { attachment: data };
+  } catch (e) {
+    return { error: { code: 'NETWORK_ERROR', message: e instanceof Error ? e.message : 'unknown' } };
+  }
+}
+
 // Remove any token-like strings from error messages
 function sanitizeErrorMessage(msg: string): string {
   // Redact anything that looks like a token (long base64/alphanumeric strings)

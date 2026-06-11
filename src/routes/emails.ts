@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Env, AccountRow } from '../types';
 import { first, run } from '../db';
 import { ok, notFound, badRequest } from '../response';
-import { getAccessToken, fetchEmails, fetchEmailDetail, deleteEmail } from '../graph';
+import { getAccessToken, fetchEmails, fetchEmailDetail, deleteEmail, listAttachments, getAttachment } from '../graph';
 
 const emails = new Hono<{ Bindings: Env }>();
 
@@ -111,6 +111,51 @@ emails.get('/:messageId', async (c) => {
     bodyPreview: e.bodyPreview ?? '',
     isRead: e.isRead,
     hasAttachments: e.hasAttachments,
+  });
+});
+
+// GET /api/accounts/:id/emails/:messageId/attachments - list attachment metadata
+emails.get('/:messageId/attachments', async (c) => {
+  const accountId = parseInt(c.req.param('id')!, 10);
+  const messageId = c.req.param('messageId')!;
+  const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [accountId]);
+  if (!acc) return notFound('账号不存在');
+  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
+  if (!tokenResult.token) return badRequest('Graph API 认证失败');
+  const result = await listAttachments(tokenResult.token, messageId);
+  if (result.error) return badRequest(result.error.message);
+  const items = (result.items ?? []).map((a) => ({ id: a.id, name: a.name, contentType: a.contentType, size: a.size }));
+  return ok({ items });
+});
+
+// GET /api/accounts/:id/emails/:messageId/attachments/:attId - download one attachment
+emails.get('/:messageId/attachments/:attId', async (c) => {
+  const accountId = parseInt(c.req.param('id')!, 10);
+  const messageId = c.req.param('messageId')!;
+  const attId = c.req.param('attId')!;
+  const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [accountId]);
+  if (!acc) return notFound('账号不存在');
+  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
+  if (!tokenResult.token) return badRequest('Graph API 认证失败');
+
+  const result = await getAttachment(tokenResult.token, messageId, attId);
+  if (result.error) {
+    if (result.error.code === 'NOT_FOUND') return notFound('附件不存在');
+    return badRequest(result.error.message);
+  }
+  const att = result.attachment!;
+  if (!att.contentBytes) return badRequest('该附件不是文件附件，无法下载');
+
+  // Decode base64 contentBytes to binary
+  const binary = atob(att.contentBytes);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+  return new Response(bytes, {
+    headers: {
+      'Content-Type': att.contentType || 'application/octet-stream',
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(att.name)}`,
+    },
   });
 });
 

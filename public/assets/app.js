@@ -964,9 +964,12 @@ async function viewEmail(index) {
         ${e.ccRecipients?.length ? `<span>抄送: ${e.ccRecipients.map(r => esc(r.address)).join(', ')}</span><br>` : ''}
         <span>时间: ${formatDate(e.receivedDateTime)}</span>
       </div>
+      ${e.hasAttachments ? '<div id="emailAttachments" style="margin-bottom:16px"></div>' : ''}
       <div class="detail-body">${bodyContent}</div>
     </div>
   `;
+
+  if (e.hasAttachments) loadAttachments(e.id);
 
   if (e.body?.contentType === 'html') {
     const frame = document.getElementById('emailFrame');
@@ -981,6 +984,31 @@ async function viewEmail(index) {
 
 function resizeFrame(frame) {
   try { frame.style.height = frame.contentDocument.body.scrollHeight + 40 + 'px'; } catch {}
+}
+
+function fmtSize(n) {
+  if (!n && n !== 0) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+// Load and render downloadable attachments for the open email
+async function loadAttachments(messageId) {
+  const box = document.getElementById('emailAttachments');
+  if (!box) return;
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-dim)">加载附件...</span>';
+  const res = await api(`/accounts/${state.selectedAccount}/emails/${messageId}/attachments`);
+  const items = res?.data?.items || [];
+  if (!res?.success || items.length === 0) {
+    box.innerHTML = '';
+    return;
+  }
+  // Each link hits the download endpoint; Content-Disposition triggers the browser download
+  box.innerHTML = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">附件 (${items.length})</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">${items.map(a =>
+      `<a class="btn btn-sm" href="${API}/accounts/${state.selectedAccount}/emails/${messageId}/attachments/${a.id}" target="_blank" rel="noopener" title="${esc(a.name)}">📎 ${esc(a.name)} <span style="color:var(--text-dim);margin-left:4px">${fmtSize(a.size)}</span></a>`
+    ).join('')}</div>`;
 }
 
 // ---- Email deletion (single / batch) ----
