@@ -22,12 +22,18 @@ app.onError((err, c) => {
   console.error('Unhandled error:', msg);
 
   // Most common deploy mistake: remote D1 not migrated → tables missing
-  if (/no such table|D1_ERROR|no such column|not authorized/i.test(msg)) {
+  if (/no such table|no such column/i.test(msg)) {
     return fail(
       'DB_NOT_READY',
       '数据库未就绪：远程库可能没迁移。请运行 wrangler d1 migrations apply outlook-email-db --remote',
       500
     );
+  }
+  // Other database failures: surface the real reason (e.g. "too many SQL variables")
+  // instead of masking every D1 error as a migration problem. Prefix match covers
+  // D1_ERROR / D1_TYPE_ERROR / SQLITE_ERROR / SQLITE_CONSTRAINT etc.
+  if (/D1_|SQLITE_|not authorized/i.test(msg)) {
+    return fail('DB_ERROR', `数据库操作失败：${msg}`, 500);
   }
   // Web Crypto throws when COOKIE_SECRET is empty/unset
   if (/key|HMAC|crypto|importKey/i.test(msg)) {

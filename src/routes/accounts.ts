@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { Env, AccountRow } from '../types';
-import { query, first, run } from '../db';
+import { query, first, run, batchRun, chunk, D1_MAX_BOUND_PARAMS } from '../db';
 import { ok, badRequest, notFound } from '../response';
 import { maskToken, isValidEmail } from '../utils/validation';
 import { getAccessToken } from '../graph';
@@ -56,21 +56,25 @@ accounts.get('/', async (c) => {
     c.env.DB, sql, params
   );
 
-  // Attach tags per account in one query (avoid N+1)
+  // Attach tags per account in one atomic batch (avoid N+1); the id list is
+  // chunked because D1 allows at most 100 bound parameters per statement
   const tagMap = new Map<number, { id: number; name: string; color: string }[]>();
   const ids = rows.map((r) => r.id);
   if (ids.length) {
-    const ph = ids.map(() => '?').join(',');
-    const tagRows = await query<{ account_id: number; id: number; name: string; color: string }>(
+    const results = await batchRun<{ account_id: number; id: number; name: string; color: string }>(
       c.env.DB,
-      `SELECT at.account_id, t.id, t.name, t.color FROM account_tags at
-       JOIN tags t ON t.id = at.tag_id WHERE at.account_id IN (${ph}) ORDER BY t.name`,
-      ids
+      chunk(ids, D1_MAX_BOUND_PARAMS).map((part) => ({
+        sql: `SELECT at.account_id, t.id, t.name, t.color FROM account_tags at
+              JOIN tags t ON t.id = at.tag_id WHERE at.account_id IN (${part.map(() => '?').join(',')}) ORDER BY t.name`,
+        params: part,
+      }))
     );
-    for (const tr of tagRows) {
-      const list = tagMap.get(tr.account_id) ?? [];
-      list.push({ id: tr.id, name: tr.name, color: tr.color });
-      tagMap.set(tr.account_id, list);
+    for (const res of results) {
+      for (const tr of res.results) {
+        const list = tagMap.get(tr.account_id) ?? [];
+        list.push({ id: tr.id, name: tr.name, color: tr.color });
+        tagMap.set(tr.account_id, list);
+      }
     }
   }
 
@@ -153,8 +157,9 @@ accounts.post('/', async (c) => {
 accounts.get('/export', async (c) => {
   const groupId = c.req.query('group_id');
   const idsParam = c.req.query('ids');
-  let sql = 'SELECT email, password, client_id, refresh_token FROM accounts';
-  const params: unknown[] = [];
+  type ExportRow = { email: string; password: string; client_id: string; refresh_token: string };
+
+  let rows: ExportRow[];
   // `ids` (comma-separated) takes precedence — used for single-row and selected exports
   if (idsParam) {
     const ids = idsParam
@@ -162,17 +167,29 @@ accounts.get('/export', async (c) => {
       .map((s) => parseInt(s, 10))
       .filter((n) => Number.isInteger(n));
     if (!ids.length) return ok({ content: '', count: 0 });
-    sql += ` WHERE id IN (${ids.map(() => '?').join(',')})`;
-    params.push(...ids);
-  } else if (groupId) {
-    sql += ' WHERE group_id = ?';
-    params.push(parseInt(groupId, 10));
+    // Chunked batch: D1 allows at most 100 bound parameters per statement.
+    // created_at is fetched so newest-first order survives the merge across chunks.
+    const results = await batchRun<ExportRow & { created_at: string }>(
+      c.env.DB,
+      chunk(ids, D1_MAX_BOUND_PARAMS).map((part) => ({
+        sql: `SELECT email, password, client_id, refresh_token, created_at FROM accounts
+              WHERE id IN (${part.map(() => '?').join(',')})`,
+        params: part,
+      }))
+    );
+    rows = results
+      .flatMap((r) => r.results)
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+  } else {
+    let sql = 'SELECT email, password, client_id, refresh_token FROM accounts';
+    const params: unknown[] = [];
+    if (groupId) {
+      sql += ' WHERE group_id = ?';
+      params.push(parseInt(groupId, 10));
+    }
+    sql += ' ORDER BY created_at DESC';
+    rows = await query<ExportRow>(c.env.DB, sql, params);
   }
-  sql += ' ORDER BY created_at DESC';
-
-  const rows = await query<{ email: string; password: string; client_id: string; refresh_token: string }>(
-    c.env.DB, sql, params
-  );
 
   const lines = rows.map(r => `${r.email}----${r.password || ''}----${r.client_id}----${r.refresh_token}`);
   return ok({ content: lines.join('\n'), count: rows.length });
@@ -189,36 +206,51 @@ accounts.post('/batch', async (c) => {
 
   if (!body.ids?.length) return badRequest('请选择账号');
 
-  const placeholders = body.ids.map(() => '?').join(',');
+  // Each action runs as one atomic D1 batch; ids are chunked so every
+  // statement stays within D1's 100-bound-params limit.
+  const inList = (part: number[]) => part.map(() => '?').join(',');
 
   if (body.action === 'delete') {
-    await run(c.env.DB, `DELETE FROM accounts WHERE id IN (${placeholders})`, body.ids);
+    await batchRun(
+      c.env.DB,
+      chunk(body.ids, D1_MAX_BOUND_PARAMS).map((part) => ({
+        sql: `DELETE FROM accounts WHERE id IN (${inList(part)})`,
+        params: part,
+      }))
+    );
     return ok(null, `已删除 ${body.ids.length} 个账号`);
   }
 
   if (body.action === 'move' && body.group_id !== undefined) {
-    await run(
+    // group_id occupies one bound slot per statement, hence limit - 1
+    await batchRun(
       c.env.DB,
-      `UPDATE accounts SET group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (${placeholders})`,
-      [body.group_id, ...body.ids]
+      chunk(body.ids, D1_MAX_BOUND_PARAMS - 1).map((part) => ({
+        sql: `UPDATE accounts SET group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (${inList(part)})`,
+        params: [body.group_id, ...part],
+      }))
     );
     return ok(null, `已移动 ${body.ids.length} 个账号`);
   }
 
   if (body.action === 'enable') {
-    await run(
+    await batchRun(
       c.env.DB,
-      `UPDATE accounts SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id IN (${placeholders})`,
-      body.ids
+      chunk(body.ids, D1_MAX_BOUND_PARAMS).map((part) => ({
+        sql: `UPDATE accounts SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id IN (${inList(part)})`,
+        params: part,
+      }))
     );
     return ok(null, `已启用 ${body.ids.length} 个账号`);
   }
 
   if (body.action === 'disable') {
-    await run(
+    await batchRun(
       c.env.DB,
-      `UPDATE accounts SET status = 'disabled', updated_at = CURRENT_TIMESTAMP WHERE id IN (${placeholders})`,
-      body.ids
+      chunk(body.ids, D1_MAX_BOUND_PARAMS).map((part) => ({
+        sql: `UPDATE accounts SET status = 'disabled', updated_at = CURRENT_TIMESTAMP WHERE id IN (${inList(part)})`,
+        params: part,
+      }))
     );
     return ok(null, `已停用 ${body.ids.length} 个账号`);
   }
