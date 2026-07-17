@@ -250,3 +250,35 @@ pnpm exec wrangler rollback [version-id]
 ```
 
 **关于数据库迁移**：Worker 回滚**不会**撤销已应用的 `0004` 迁移。但这没关系——`0004` 只是新增了两个**带默认值的列**，旧版代码根本不读它们，所以对回滚后的旧代码**完全无害**。因此整个回滚是安全的，无需手动处理数据库。
+
+---
+
+## 变更记录
+
+按时间倒序。每条标注**是否需要跑数据库迁移**——只有引入新迁移文件的那次才需要，其余 `wrangler deploy` 即可。
+
+### 3. 账号列表分页（前端）
+
+- **改动**：账号管理页的列表改为**每页 50 条**分页显示。此前一次性渲染全部账号，账号量大（数百上千）时首屏 DOM 卡顿明显。
+- **实现**：纯前端分页——数据仍一次性加载到内存，但只渲染当前页的行；底部提供首页/上一页/下一页/末页导航，翻页不重新请求后端。
+- **附带修正**：批量选择改为**跨页保持**的选择集合，翻页/筛选不再丢失已选项；表头「全选」复选框只作用于**当前页**。
+- **影响文件**：`public/assets/app.js`
+- **需要迁移**：❌ 否，`wrangler deploy` 即可。
+
+### 2. 修复 IMAP 账号「点开邮件白屏 / 报错」
+
+- **根因**：IMAP 详情此前用 `BODY.PEEK[]` 拉取**整封原始邮件**（含所有附件的 base64 内容），再在 Worker 里整体解析 MIME。带附件/图片的邮件会撑爆 Cloudflare 免费层的 10ms CPU 限制，导致 Worker 崩溃、前端白屏。
+- **修复**：改为**两步取信**——先只取 `BODYSTRUCTURE`（结构元数据，极小）定位正文分块，再**只抓正文那一块** `BODY.PEEK[<part>]`（并加 256 KB 上限），附件完全不下载。与 Graph 通道行为对齐，负载与列表一样轻。
+- **已知限制**：IMAP 账号仍**不支持下载附件**（正文中的验证码/链接/文字均正常）。
+- **影响文件**：`src/imap.ts`、`src/imapParse.ts`、`test/imap.test.ts`
+- **需要迁移**：❌ 否，`wrangler deploy` 即可。
+
+### 1. 新增 IMAP 双通道 + 修复 `AADSTS90023`
+
+- **改动 A（scope 修复）**：刷新 token 时不再用 `.default`，改为逐级尝试颗粒化 Graph scope（`Mail.ReadWrite` → `Mail.Read` → `.default`）。用默认 Thunderbird ID 手动授权拿到的令牌现在能正常刷新，不再报 `AADSTS90023: No applicable permissions were found`。
+- **改动 B（IMAP 通道）**：仅授权 IMAP 资源的令牌（购买 / 领来 / 第三方刷新出来的常见此类）现在可直接导入使用，走 IMAP over XOAUTH2。系统按 `auto` 策略首次访问自动探测该走 Graph 还是 IMAP，并记住结果。
+- **影响文件**：新增 `src/imap.ts` / `src/imapParse.ts` / `src/mail.ts` / `migrations/0004_mail_protocol.sql`；修改 `src/graph.ts`、`src/cron.ts`、`src/types.ts`、`src/routes/{accounts,emails,external}.ts`、`public/assets/app.js`。
+- **需要迁移**：✅ **是**。这是唯一引入新迁移的一次，部署前必须先跑：
+  ```bash
+  pnpm exec wrangler d1 migrations apply outlook-email-db --remote
+  ```
