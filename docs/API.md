@@ -91,6 +91,8 @@ for mail in data["data"]["items"]:
 }
 ```
 
+> 💡 **关于 `id`**：Graph 账号返回微软的原始消息 id（不透明字符串）；IMAP-only 账号返回 `imap:<文件夹>:<UID>` 格式（如 `imap:inbox:12345`）。两者都只作为不透明标识使用（用于后续读详情 / 删信），无需自行解析。
+
 失败：
 
 ```json
@@ -106,8 +108,7 @@ for mail in data["data"]["items"]:
 | 400 | `BAD_REQUEST` | 缺少 `email` 参数 |
 | 404 | `NOT_FOUND` | 该邮箱不在后台账号列表里 |
 | 400 | `DISABLED` | 该账号已被停用 |
-| 502 | `TOKEN_FAILED` | 该账号 Token 失效，需在后台「重新授权」 |
-| 502 | `GRAPH_ERROR` | 调用 Microsoft Graph 失败 |
+| 502 | `MAIL_ERROR` | 读信失败：Token 失效（需在后台「重新授权」），或调用 Graph / IMAP 出错 |
 
 ## 6. 安全建议
 

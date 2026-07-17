@@ -24,6 +24,10 @@ export interface GroupRow {
   updated_at: string;
 }
 
+// Mail channel for an account. 'auto' = not yet probed (dispatcher decides and
+// rewrites it); 'graph' = Microsoft Graph REST; 'imap' = IMAP over XOAUTH2.
+export type MailProtocol = 'auto' | 'graph' | 'imap';
+
 export interface AccountRow {
   id: number;
   email: string;
@@ -33,8 +37,27 @@ export interface AccountRow {
   group_id: number;
   remark: string;
   status: string;
+  // Added in migration 0004. Older rows read back as NULL until migrated, so
+  // consumers must treat missing values as the defaults ('auto' / '').
+  mail_protocol: MailProtocol;
+  token_scope: string;
   created_at: string;
   updated_at: string;
+}
+
+// Normalized message shape shared by both channels (Graph + IMAP), so routes and
+// the frontend see one consistent structure regardless of how it was fetched.
+export interface MailMessage {
+  id: string;
+  subject: string;
+  from: { name: string; address: string };
+  toRecipients?: Array<{ name: string; address: string }>;
+  ccRecipients?: Array<{ name: string; address: string }>;
+  receivedDateTime: string;
+  bodyPreview: string;
+  isRead: boolean;
+  hasAttachments: boolean;
+  body?: { contentType: string; content: string };
 }
 
 export interface TempEmailRow {

@@ -1,0 +1,252 @@
+# 升级部署指南（Graph + IMAP 双通道）
+
+本文档说明：**项目已经部署在 Cloudflare Workers 上**，现在要把带「IMAP 双通道 + scope 修复」的新代码更新上去，该怎么做。
+
+> 首次全新部署请看 [部署教程 GUIDE.md](./GUIDE.md)，本文只讲**已部署项目的更新**。
+
+---
+
+## 目录
+
+- [先理解一件事：Worker 怎么"替换代码"](#先理解一件事worker-怎么替换代码)
+- [这次更新改了什么](#这次更新改了什么)
+- [更新前的准备与检查](#更新前的准备与检查)
+- [方式 A：直接在现有工程目录更新](#方式-a直接在现有工程目录更新)
+- [方式 B：把改动搬到你自己的工程](#方式-b把改动搬到你自己的工程)
+- [部署后验证（重要）](#部署后验证重要)
+- [常见问题](#常见问题)
+- [回滚](#回滚)
+- [变更记录](#变更记录)
+
+---
+
+## 先理解一件事：Worker 怎么"替换代码"
+
+Cloudflare Worker **没有"单独替换某个文件"的操作**。`wrangler deploy` 每次都会把整个 `src/` 打包成一个 bundle，**整体、原子地**替换掉线上正在跑的版本。
+
+所以"把修改的代码替换上去"这件事，你不需要手动挑文件上传——**只要本地是新代码，跑一次 `wrangler deploy`，线上就整体换成新版了**。
+
+这次更新和你平时 deploy 的**唯一区别**是：多了一个新的数据库迁移（`0004`），**必须在 `deploy` 之前先跑**，否则新代码去查数据库里还不存在的 `mail_protocol` 列会报错。
+
+一句话总结顺序：
+
+```
+先跑数据库迁移 (0004)  →  再 wrangler deploy
+```
+
+---
+
+## 这次更新改了什么
+
+**功能层面**
+
+1. **修复 `AADSTS90023` 刷新报错**：刷新 token 时不再用 `.default`，改为逐级尝试颗粒化 Graph scope（`Mail.ReadWrite` → `Mail.Read` → `.default`）。用默认 Thunderbird ID 手动授权拿到的令牌现在能正常刷新。
+2. **新增 IMAP 通道**：购买 / 领来 / 第三方刷新出来的**仅授权 IMAP 的令牌**（之前在本项目一直报错、读不了信）现在可以直接导入使用，走 IMAP over XOAUTH2。系统自动探测每个账号该用 Graph 还是 IMAP。
+
+**文件层面**
+
+| 类型 | 文件 |
+|------|------|
+| 🆕 新增 | `src/imap.ts`（IMAP 客户端）|
+| 🆕 新增 | `src/imapParse.ts`（IMAP 响应解析 / MIME 解码，纯函数）|
+| 🆕 新增 | `src/mail.ts`（读信调度层，自动选通道）|
+| 🆕 新增 | `migrations/0004_mail_protocol.sql`（**数据库迁移，必须跑**）|
+| 🆕 新增 | `test/imap.test.ts`、`test/stubs/cloudflare-sockets.ts`（测试，可选）|
+| ✏️ 修改 | `src/graph.ts`、`src/cron.ts`、`src/types.ts` |
+| ✏️ 修改 | `src/routes/accounts.ts`、`src/routes/emails.ts`、`src/routes/external.ts` |
+| ✏️ 修改 | `public/assets/app.js`（前端提示文案 + 显示实际通道）|
+| 📄 文档 | `README.md`、`README_EN.md`、`docs/API.md`、`docs/GUIDE.md` |
+
+> 数据库迁移 `0004` 只是给 `accounts` 表**新增两列**（`mail_protocol` 默认 `'auto'`、`token_scope` 默认 `''`），**不会删除或修改任何已有数据**。已有账号首次访问时会自动探测协议并回填，无需手工处理。
+
+---
+
+## 更新前的准备与检查
+
+### 1. 确认你有可用的 `wrangler` 登录
+
+```bash
+pnpm exec wrangler whoami
+```
+
+若未登录，先 `pnpm exec wrangler login`。
+
+### 2. 千万别覆盖你的 `wrangler.toml`
+
+`wrangler.toml` 在 `.gitignore` 里、**不进仓库**。你线上那份是你首次部署时自己配的，里面有你的 **`database_id`**。这次更新**完全不用动它**（唯一可能要改的是下面第 3 点的兼容日期）。
+
+> 如果你是用「方式 B」把代码搬到别处，注意别把仓库里的 `wrangler.toml.example` 当成你的配置——你要用的是你自己那份填好 `database_id` 的 `wrangler.toml`。
+
+### 3. 检查 `compatibility_date`（IMAP 依赖此项）
+
+IMAP 通道用到了 Cloudflare 的 `connect()` TCP socket API，需要足够新的兼容日期。打开你的 `wrangler.toml`，确认：
+
+```toml
+compatibility_date = "2026-06-01"   # 或更新的日期
+```
+
+如果你的日期比这个老（例如还是 2023/2024 年的），改成 `2026-06-01` 或更新。**不改的话 IMAP 通道会因 `connect()` 不可用而失败。**
+
+### 4. 记下你的 D1 数据库名
+
+后面的迁移命令里要用到。默认是 `outlook-email-db`（在 `wrangler.toml` 的 `[[d1_databases]] database_name` 里）。如果你首次部署时改过名字，把下文命令里的 `outlook-email-db` 换成你实际的名字。
+
+---
+
+## 方式 A：直接在现有工程目录更新
+
+**适用于**：你现在这台机器上、平时用来 deploy 的就是这份工程目录（已经包含本次新代码）。
+
+在工程根目录依次执行：
+
+```bash
+# 进入工程目录（换成你的实际路径）
+cd /path/to/cf-outlook-email
+
+# 1. 安装依赖（package.json 依赖没变，此步是保险）
+pnpm install
+
+# 2. 【关键】先把新迁移应用到线上数据库（注意 --remote）
+pnpm exec wrangler d1 migrations apply outlook-email-db --remote
+
+# 3. 部署（整体替换线上 Worker）
+pnpm exec wrangler deploy
+```
+
+**第 2 步会发生什么**：`wrangler` 只会执行**尚未应用过**的迁移。你线上库已经跑过 `0001~0003`，它们会自动跳过，本次只会应用新的 `0004`。执行时会列出将要应用的迁移并让你确认，输入 `y` 即可。
+
+**第 3 步会发生什么**：打包 `src/` 上传，几秒后线上 Worker 原子切换到新版本。访问你的域名即为新版。
+
+> 可选：部署前想本地自检，可先跑 `pnpm run build`（类型检查）和 `pnpm test`（单元测试）。两者都应通过。
+
+---
+
+## 方式 B：把改动搬到你自己的工程
+
+**适用于**：你线上是从**另一处**（比如你自己 fork/clone 的仓库）部署的，本次新代码不在那份工程里。
+
+### 第 1 步：把文件搬过去
+
+**新增文件**（直接复制到对应路径，目标目录若不存在则新建）：
+
+```
+src/imap.ts
+src/imapParse.ts
+src/mail.ts
+migrations/0004_mail_protocol.sql
+test/imap.test.ts                    # 可选（仅测试用）
+test/stubs/cloudflare-sockets.ts     # 可选（仅测试用）
+```
+
+**覆盖文件**（用新版内容替换你工程里的同名文件）：
+
+```
+src/graph.ts
+src/cron.ts
+src/types.ts
+src/routes/accounts.ts
+src/routes/emails.ts
+src/routes/external.ts
+public/assets/app.js
+```
+
+**文档**（不影响运行，看你要不要同步）：
+
+```
+README.md
+README_EN.md
+docs/API.md
+docs/GUIDE.md
+docs/UPGRADE.md   # 就是本文件
+```
+
+> 如果你的工程是 git 仓库，也可以用 `git pull` / `git merge` 从上游拉这些改动，效果一样。手动拷贝时留意别漏了 `migrations/0004_mail_protocol.sql`——它最关键。
+
+### 第 2 步：在你的工程目录执行更新
+
+和方式 A 的命令完全一样：
+
+```bash
+cd /path/to/your/project
+
+pnpm install
+
+# 关键：先跑迁移到线上库
+pnpm exec wrangler d1 migrations apply outlook-email-db --remote
+
+# 部署
+pnpm exec wrangler deploy
+```
+
+---
+
+## 部署后验证（重要）
+
+> ⚠️ **必须实测**：IMAP 通道的真实网络交互（socket 连接、XOAUTH2 认证、文件夹读取）无法在开发环境模拟，只有真机能确认。部署后请务必手动验证一遍。
+
+按顺序验证三件事：
+
+1. **验 IMAP 修复（本次重点）**
+   找一个**之前导入后一直报 `AADSTS90023` 的账号**，进后台点「**测试连接**」。
+   - ✅ 期望：提示「**IMAP 连接正常**」（不再报错）。
+   - 再点进该账号「**查看邮件**」，能列出邮件即说明 IMAP 通道打通。
+
+2. **验 Graph 账号没被改坏**
+   找一个原本正常的 Graph 账号，点「测试连接」。
+   - ✅ 期望：提示「**Graph API 连接正常**」，邮件照常能读。
+
+3. **验刷新不再报 90023**
+   用默认 Thunderbird ID + 手动授权（方式二）拿一个令牌导入，保存后点测试。
+   - ✅ 期望：连接正常，不再出现 `AADSTS90023: No applicable permissions were found`。
+
+如果第 1、2 步任一失败，把「测试连接」弹出的**完整报错**记下来（最可能是 IMAP 认证响应解析、或垃圾箱文件夹名在你租户下叫法不同导致的），据此再针对性修复。
+
+---
+
+## 常见问题
+
+### Q: 跑迁移时报 `no such table` 或让我选数据库？
+
+说明数据库名对不上。确认命令里的 `outlook-email-db` 与你 `wrangler.toml` 里 `[[d1_databases]] database_name` 一致。
+
+### Q: 部署后页面报 `no such column: mail_protocol` 或 `DB_NOT_READY`？
+
+你**跳过了迁移**，或者迁移没跑到**线上**库（漏了 `--remote`）。重新执行：
+
+```bash
+pnpm exec wrangler d1 migrations apply outlook-email-db --remote
+```
+
+再刷新页面即可。
+
+### Q: `db:migrate` 这个 npm 脚本能用吗？
+
+`package.json` 里的 `pnpm run db:migrate` 等价于 `wrangler d1 migrations apply outlook-email-db`，但**未带 `--remote`**，行为取决于 wrangler 版本，可能只作用于本地库。**更新线上库请直接用带 `--remote` 的完整命令**（本文一直用的那条），最稳妥。
+
+### Q: IMAP 账号能下载附件吗？
+
+暂不支持。IMAP 通道目前只做列表、正文、删除；附件下载仅 Graph 通道支持。IMAP 账号的附件请求会优雅降级（不报错，但拿不到附件）。
+
+### Q: 已有的一堆账号需要我手动改协议吗？
+
+不需要。迁移后所有账号 `mail_protocol` 默认为 `auto`，首次访问时系统自动探测（先试 Graph，失败退 IMAP）并把结果记住，之后直接走对的通道。
+
+### Q: 批量删除对 IMAP 账号安全吗？
+
+安全。IMAP 批量删除用**单条连接**处理整批（不会为每封邮件各开一个 socket），避免触发 Workers 的并发出站连接上限。
+
+---
+
+## 回滚
+
+万一新版有问题，可以回滚 Worker：
+
+```bash
+# 查看部署历史，找到上一个版本的 Version ID
+pnpm exec wrangler deployments list
+
+# 回滚到指定版本
+pnpm exec wrangler rollback [version-id]
+```
+
+**关于数据库迁移**：Worker 回滚**不会**撤销已应用的 `0004` 迁移。但这没关系——`0004` 只是新增了两个**带默认值的列**，旧版代码根本不读它们，所以对回滚后的旧代码**完全无害**。因此整个回滚是安全的，无需手动处理数据库。

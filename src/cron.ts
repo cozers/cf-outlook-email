@@ -1,6 +1,6 @@
 import type { Env, AccountRow } from './types';
 import { query, first, run } from './db';
-import { getAccessToken, fetchEmails } from './graph';
+import { acquireToken, listEmails } from './mail';
 import { sendTelegramMessage, escapeHtml } from './telegram';
 
 // Hard cap per run: each account = 1 subrequest (token refresh); free plan allows 50/invocation
@@ -57,19 +57,12 @@ export async function runTokenRefresh(env: Env, opts: { force?: boolean } = {}):
   let ok = 0;
   let fail = 0;
   for (const acc of accounts) {
-    const res = await getAccessToken(acc.client_id, acc.refresh_token);
-    if (res.token) {
-      ok++;
-      const newToken = res.newRefreshToken && res.newRefreshToken !== acc.refresh_token ? res.newRefreshToken : acc.refresh_token;
-      await run(
-        db,
-        "UPDATE accounts SET refresh_token = ?, status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        [newToken, acc.id]
-      );
-    } else {
-      fail++;
-      await run(db, "UPDATE accounts SET status = 'error', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [acc.id]);
-    }
+    // acquireToken resolves the account's protocol (Graph or IMAP), persists any
+    // rotated refresh_token / working scope / probed protocol, and marks the row
+    // active-or-error itself, so the loop only tallies the outcome.
+    const res = await acquireToken(db, acc);
+    if (res.resolved) ok++;
+    else fail++;
   }
 
   const summary = `${new Date().toISOString()} 刷新 ${accounts.length} 个：成功 ${ok}，失败 ${fail}`;
@@ -116,8 +109,11 @@ export async function runEmailPush(env: Env, opts: { force?: boolean } = {}): Pr
   let sent = 0;
   let failedAccounts = 0;
   for (const acc of accounts) {
-    const tok = await getAccessToken(acc.client_id, acc.refresh_token);
-    if (!tok.token) {
+    // listEmails dispatches to Graph or IMAP and returns the normalised shape
+    // (receivedDateTime / from.address / subject / bodyPreview) either way, so the
+    // push logic below is protocol-agnostic. Token acquisition + rotation happen inside.
+    const list = await listEmails(db, acc, { folder: 'inbox', top: 10 });
+    if (list.error || !list.items) {
       failedAccounts++;
       continue;
     }
@@ -128,12 +124,6 @@ export async function runEmailPush(env: Env, opts: { force?: boolean } = {}): Pr
       [acc.id]
     );
     const watermark = stateRow?.last_pushed_at || '';
-
-    const list = await fetchEmails(tok.token, { folder: 'inbox', top: 10 });
-    if (list.error || !list.items) {
-      failedAccounts++;
-      continue;
-    }
 
     // First time we see an account: set the watermark to newest without flooding
     // the chat with the whole backlog. Newest is first (orderby desc).
@@ -155,7 +145,7 @@ export async function runEmailPush(env: Env, opts: { force?: boolean } = {}): Pr
 
     let newWatermark = watermark;
     for (const m of fresh) {
-      const fromAddr = m.from?.emailAddress?.address || '未知发件人';
+      const fromAddr = m.from?.address || '未知发件人';
       const text =
         `📬 <b>${escapeHtml(acc.email)}</b>\n` +
         `发件人: ${escapeHtml(fromAddr)}\n` +

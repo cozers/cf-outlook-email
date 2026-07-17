@@ -32,7 +32,8 @@
 - 🔐 **One-Click OAuth** — Authorize Outlook accounts via browser popup, no manual token copying
 - 🔄 **Auto Token Refresh** — Automatically saves new refresh tokens on each use, preventing expiry
 - 📦 **Batch Operations** — Import/export/delete/move in bulk, including per-row & selected export, with group & status filters
-- 📨 **Email Reading** — Read inbox / junk / deleted via Microsoft Graph API with folder switching, aggregated view, paginated load-more, search and HTML rendering
+- 📨 **Email Reading** — Dual channel (Graph API + IMAP), auto-selecting whichever works; folder switching (inbox / junk / deleted), aggregated view, paginated load-more, search and HTML rendering
+- 🔗 **IMAP-only token support** — Purchased / handed-out / third-party-refreshed tokens scoped to IMAP only can be imported and read directly (via IMAP over XOAUTH2, auto-detected)
 - 📭 **Temp Email** — GPTMail API integration for disposable email addresses
 - 🎨 **Polished Themes** — Dark / Light / Auto with glassmorphism, circle-swoop transition & ambient breathing glow
 - 🆓 **Completely Free** — Runs on Cloudflare's free tier, no credit card needed
@@ -80,7 +81,7 @@ Works with all Outlook / Hotmail / Live accounts. Bulk import supported (format:
 | 🧭 Router | Hono |
 | 🗄️ Database | Cloudflare D1 (SQLite) |
 | 🎨 Frontend | Vanilla HTML/CSS/JS |
-| 📧 Email | Microsoft Graph API |
+| 📧 Email | Microsoft Graph API + IMAP over XOAUTH2 |
 | 🚀 Deploy | Wrangler |
 
 ## 💰 Free Tier Limits
@@ -109,15 +110,17 @@ Works with all Outlook / Hotmail / Live accounts. Bulk import supported (format:
 - [x] 🎨 Theme switching + circle-swoop transition + breathing glow
 - [x] 🔑 External API + API Key (login-free email fetch for automation, see [API Docs](./docs/API.md))
 - [x] 🗑️ Delete emails (single / batch, soft-delete to Deleted Items)
-- [x] 📎 Attachment download
+- [x] 🔀 Dual-channel reading (Graph API + IMAP over XOAUTH2, auto-probed, compatible with IMAP-only tokens)
+- [x] 📎 Attachment download (Graph channel; not yet supported on the IMAP channel)
 - [x] 🏷️ Tag system (multiple tags per account, cross-group filtering)
 - [x] ⏰ Scheduled token refresh (Cron Trigger, configurable interval/batch, keeps accounts alive)
+- [x] 🤖 Telegram push for new emails (Cron polling, configurable interval)
 
 **Planned (PRs welcome)**
 
-- [ ] 🤖 Telegram push for new emails
+- [ ] 🔔 More push channels (WeCom / DingTalk, etc.)
 
-> ⚠️ Due to Cloudflare Workers platform limits, the following are not feasible: IMAP (Gmail / QQ / 163 and other non-Microsoft mailboxes), SMTP forwarding, HTTP/SOCKS5 proxy.
+> ⚠️ Note on IMAP: Outlook/Hotmail/Live IMAP mailboxes **are** supported (via Workers TCP sockets + XOAUTH2). Still not feasible on the Workers platform: IMAP for non-Microsoft providers (Gmail / QQ / 163, etc.), SMTP forwarding, and HTTP/SOCKS5 proxy.
 
 ## ⚠️ Disclaimer
 

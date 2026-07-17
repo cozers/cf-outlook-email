@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import type { Env, AccountRow } from '../types';
-import { first, run } from '../db';
+import { first } from '../db';
 import { ok, fail } from '../response';
-import { getAccessToken, fetchEmails } from '../graph';
+import { listEmails } from '../mail';
 
 // External API: fetch emails by API key, no login required.
 // Mounted BEFORE the cookie auth middleware so it is not gated by sessions.
@@ -43,32 +43,17 @@ external.get('/emails', async (c) => {
   if (!acc) return fail('NOT_FOUND', '账号不存在', 404);
   if (acc.status === 'disabled') return fail('DISABLED', '该账号已停用', 400);
 
-  const tok = await getAccessToken(acc.client_id, acc.refresh_token);
-  if (!tok.token) {
-    await run(c.env.DB, "UPDATE accounts SET status = 'error', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [acc.id]);
-    return fail('TOKEN_FAILED', tok.error?.message || 'Token 获取失败', 502);
-  }
-  // Persist a rotated refresh_token if Microsoft issued one
-  if (tok.newRefreshToken && tok.newRefreshToken !== acc.refresh_token) {
-    await run(
-      c.env.DB,
-      "UPDATE accounts SET refresh_token = ?, status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [tok.newRefreshToken, acc.id]
-    );
-  }
-
-  const result = await fetchEmails(tok.token, { folder, top, skip: 0, keyword });
-  if (result.error) return fail('GRAPH_ERROR', result.error.message, 502);
+  // Dispatch to Graph or IMAP (resolved/probed inside), token rotation + status
+  // persistence handled by the dispatcher. Normalised items either way.
+  const result = await listEmails(c.env.DB, acc, { folder, top, skip: 0, keyword });
+  if (result.error) return fail('MAIL_ERROR', result.error, 502);
 
   const items = (result.items ?? []).map((e) => ({
     id: e.id,
-    subject: e.subject ?? '(无主题)',
-    from: {
-      name: e.from?.emailAddress?.name ?? '',
-      address: e.from?.emailAddress?.address ?? '',
-    },
+    subject: e.subject,
+    from: e.from,
     receivedDateTime: e.receivedDateTime,
-    bodyPreview: e.bodyPreview ?? '',
+    bodyPreview: e.bodyPreview,
     isRead: e.isRead,
   }));
 

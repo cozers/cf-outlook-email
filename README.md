@@ -17,7 +17,7 @@
 
 ⚠️ 此按钮**无法一键部署**：项目依赖 D1 数据库与 Secret，需手动建库、跑迁移、设密钥，按钮会因框架检测失败而报错。请按 📖 [详细部署教程](./docs/GUIDE.md) 操作（约 5 分钟）。
 
-🌐 [English](./README_EN.md) · 📖 [详细部署教程](./docs/GUIDE.md) · 🔌 [对外 API 文档](./docs/API.md)
+🌐 [English](./README_EN.md) · 📖 [详细部署教程](./docs/GUIDE.md) · ⬆️ [升级更新指南](./docs/UPGRADE.md) · 🔌 [对外 API 文档](./docs/API.md)
 
 </div>
 
@@ -32,7 +32,8 @@
 - 🔐 **一键授权** — 浏览器弹窗登录微软账号，自动获取凭证，无需手动复制 token
 - 🔄 **Token 自动续期** — 每次读邮件自动刷新 token，只要定期使用就不会过期
 - 📦 **批量管理** — 批量导入/导出/删除/移组，支持单条与选中导出、分组和状态筛选
-- 📨 **邮件阅读** — 通过 Microsoft Graph API 实时读取，支持收件箱/垃圾箱/已删除文件夹切换、聚合视图、分页加载、搜索和 HTML 渲染
+- 📨 **邮件阅读** — Graph API + IMAP 双通道，自动选择可用方式；支持收件箱/垃圾箱/已删除文件夹切换、聚合视图、分页加载、搜索和 HTML 渲染
+- 🔗 **兼容 IMAP-only 令牌** — 购买 / 领来 / 第三方刷新出来的仅授权 IMAP 的令牌也能直接导入读信（走 IMAP over XOAUTH2，自动探测）
 - 📭 **临时邮箱** — 集成 GPTMail API，一键生成临时邮箱接收邮件
 - 🎨 **精致主题** — 深色/浅色/跟随系统，毛玻璃质感 + 圆形扫掠切换 + 低频呼吸光晕
 - 🆓 **完全免费** — 运行在 Cloudflare 免费层，无需信用卡
@@ -80,7 +81,7 @@ pnpm exec wrangler deploy
 | 🧭 路由 | Hono |
 | 🗄️ 数据库 | Cloudflare D1 (SQLite) |
 | 🎨 前端 | 原生 HTML/CSS/JS |
-| 📧 邮件 | Microsoft Graph API |
+| 📧 邮件 | Microsoft Graph API + IMAP over XOAUTH2 |
 | 🚀 部署 | Wrangler |
 
 ## 🗂️ 项目结构
@@ -89,7 +90,10 @@ pnpm exec wrangler deploy
 src/                     后端源码（Worker）
 ├── index.ts             入口 + 路由
 ├── auth.ts              HMAC-SHA256 Cookie 鉴权
-├── graph.ts             Graph API 集成
+├── graph.ts             Graph API + token 获取（Graph / IMAP）
+├── imap.ts              IMAP over XOAUTH2 客户端（Cloudflare socket）
+├── imapParse.ts         IMAP 响应解析 / MIME 解码（纯函数，含单测）
+├── mail.ts              读信调度层（自动选 Graph 或 IMAP 通道）
 ├── routes/              业务路由（6 个模块）
 └── utils/               加密、校验工具
 public/                  前端（静态 SPA）
@@ -123,7 +127,8 @@ tools/                   辅助脚本
 - [x] 🎨 主题切换 + 圆形扫掠过渡 + 呼吸光晕
 - [x] 🔑 对外 API + API Key（免登录拉取邮件，自动化取验证码，见 [API 文档](./docs/API.md)）
 - [x] 🗑️ 删除邮件（单条 / 批量，软删除到「已删除」）
-- [x] 📎 附件下载
+- [x] 🔀 双通道读信（Graph API + IMAP over XOAUTH2，自动探测，兼容 IMAP-only 令牌）
+- [x] 📎 附件下载（Graph 通道；IMAP 通道暂不支持）
 - [x] 🏷️ 标签系统（一个账号多标签，跨分组筛选）
 - [x] ⏰ 定时刷新 Token（Cron Trigger，可配间隔/批量，自动保活账号）
 - [x] 🤖 Telegram 推送新邮件（Cron 轮询，新邮件实时推送到 Telegram，可配间隔）
@@ -132,7 +137,7 @@ tools/                   辅助脚本
 
 - [ ] 🔔 更多推送渠道（企业微信 / 钉钉等）
 
-> ⚠️ 受 Cloudflare Workers 平台限制，以下功能无法实现：IMAP（Gmail / QQ / 163 等非微软邮箱）、SMTP 转发、HTTP/SOCKS5 代理。
+> ℹ️ 读信支持 Microsoft Graph 与 IMAP（Outlook/Hotmail/Live，IMAP over XOAUTH2 基于 Workers `connect()` socket 实现）双通道。以下仍不支持：非微软邮箱（Gmail / QQ / 163 等，本项目为 Outlook 专用）、SMTP 发信转发、HTTP/SOCKS5 代理。
 
 ## ⚠️ 免责声明
 

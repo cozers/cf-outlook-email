@@ -3,7 +3,7 @@ import type { Env, AccountRow } from '../types';
 import { query, first, run, batchRun, chunk, D1_MAX_BOUND_PARAMS } from '../db';
 import { ok, badRequest, notFound } from '../response';
 import { maskToken, isValidEmail } from '../utils/validation';
-import { getAccessToken } from '../graph';
+import { acquireToken } from '../mail';
 
 const accounts = new Hono<{ Bindings: Env }>();
 
@@ -367,38 +367,26 @@ accounts.delete('/:id', async (c) => {
   return ok(null, '账号已删除');
 });
 
-// POST /api/accounts/:id/test - test Graph connection
+// POST /api/accounts/:id/test - test connection (Graph or IMAP, auto-resolved)
 accounts.post('/:id/test', async (c) => {
   const id = parseInt(c.req.param('id'), 10);
   const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [id]);
   if (!acc) return notFound('账号不存在');
 
-  const result = await getAccessToken(acc.client_id, acc.refresh_token);
+  // acquireToken resolves the account's protocol, persists any rotated
+  // refresh_token / working scope / probed protocol, and marks the row
+  // active-or-error itself — so a passing test also "repairs" a stale protocol.
+  const result = await acquireToken(c.env.DB, acc);
 
-  if (result.token) {
-    // Auto-save rotated refresh_token + mark active
-    const updates: unknown[] = ['active', id];
-    let sql = 'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP';
-    if (result.newRefreshToken && result.newRefreshToken !== acc.refresh_token) {
-      sql = 'UPDATE accounts SET refresh_token = ?, status = ?, updated_at = CURRENT_TIMESTAMP';
-      updates.splice(0, 0, result.newRefreshToken);
-    }
-    sql += ' WHERE id = ?';
-    await run(c.env.DB, sql, updates);
-    return ok({ connected: true }, 'Graph API 连接正常');
+  if (result.resolved) {
+    const label = result.resolved.protocol === 'imap' ? 'IMAP' : 'Graph API';
+    return ok({ connected: true, protocol: result.resolved.protocol }, `${label} 连接正常`);
   }
-
-  // Mark as error
-  await run(
-    c.env.DB,
-    'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    ['error', id]
-  );
 
   return ok({
     connected: false,
-    error: result.error?.message ?? 'Unknown error',
-  }, 'Graph API 连接失败');
+    error: result.error ?? 'Unknown error',
+  }, '连接失败');
 });
 
 export default accounts;

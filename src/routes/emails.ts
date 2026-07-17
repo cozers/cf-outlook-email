@@ -1,34 +1,12 @@
 import { Hono } from 'hono';
 import type { Env, AccountRow } from '../types';
-import { first, run } from '../db';
+import { first } from '../db';
 import { ok, notFound, badRequest } from '../response';
-import { getAccessToken, fetchEmails, fetchEmailDetail, deleteEmail, listAttachments, getAttachment } from '../graph';
+import { acquireToken } from '../mail';
+import { listEmails, getEmailDetail, deleteMessage, batchDelete } from '../mail';
+import { listAttachments, getAttachment } from '../graph';
 
 const emails = new Hono<{ Bindings: Env }>();
-
-// Helper: get token and auto-save rotated refresh_token
-async function getTokenAndRefresh(
-  db: D1Database,
-  acc: AccountRow
-): Promise<{ token?: string; error?: string }> {
-  const result = await getAccessToken(acc.client_id, acc.refresh_token);
-
-  if (!result.token) {
-    await run(db, 'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['error', acc.id]);
-    return { error: result.error?.message ?? 'Token acquisition failed' };
-  }
-
-  // Auto-save new refresh_token if Microsoft rotated it
-  if (result.newRefreshToken && result.newRefreshToken !== acc.refresh_token) {
-    await run(
-      db,
-      'UPDATE accounts SET refresh_token = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [result.newRefreshToken, 'active', acc.id]
-    );
-  }
-
-  return { token: result.token };
-}
 
 // GET /api/accounts/:id/emails
 emails.get('/', async (c) => {
@@ -45,30 +23,12 @@ emails.get('/', async (c) => {
   const skip = parseInt(c.req.query('skip') ?? '0', 10);
   const keyword = c.req.query('keyword');
 
-  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
-  if (!tokenResult.token) {
-    return ok({ items: [], error: tokenResult.error }, 'Graph API 认证失败');
-  }
-
-  const result = await fetchEmails(tokenResult.token, { folder, top, skip, keyword });
+  const result = await listEmails(c.env.DB, acc, { folder, top, skip, keyword });
   if (result.error) {
-    return ok({ items: [], error: result.error.message }, '获取邮件失败');
+    return ok({ items: [], error: result.error }, '获取邮件失败');
   }
 
-  const items = (result.items ?? []).map((e) => ({
-    id: e.id,
-    subject: e.subject ?? '(无主题)',
-    from: {
-      name: e.from?.emailAddress?.name ?? '',
-      address: e.from?.emailAddress?.address ?? '未知',
-    },
-    receivedDateTime: e.receivedDateTime,
-    bodyPreview: e.bodyPreview ?? '',
-    isRead: e.isRead,
-    hasAttachments: e.hasAttachments,
-  }));
-
-  return ok({ items, total: items.length });
+  return ok({ items: result.items ?? [], total: (result.items ?? []).length });
 });
 
 // GET /api/accounts/:id/emails/:messageId
@@ -79,50 +39,32 @@ emails.get('/:messageId', async (c) => {
   const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [accountId]);
   if (!acc) return notFound('账号不存在');
 
-  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
-  if (!tokenResult.token) {
-    return badRequest('Graph API 认证失败');
-  }
-
-  const result = await fetchEmailDetail(tokenResult.token, messageId);
+  const result = await getEmailDetail(c.env.DB, acc, messageId);
   if (result.error) {
-    if (result.error.code === 'NOT_FOUND') return notFound('邮件不存在');
-    return badRequest(result.error.message);
+    if (result.code === 'NOT_FOUND') return notFound('邮件不存在');
+    return badRequest(result.error);
   }
 
-  const e = result.item!;
-  return ok({
-    id: e.id,
-    subject: e.subject ?? '(无主题)',
-    from: {
-      name: e.from?.emailAddress?.name ?? '',
-      address: e.from?.emailAddress?.address ?? '未知',
-    },
-    toRecipients: (e.toRecipients ?? []).map((r) => ({
-      name: r.emailAddress?.name ?? '',
-      address: r.emailAddress?.address ?? '',
-    })),
-    ccRecipients: (e.ccRecipients ?? []).map((r) => ({
-      name: r.emailAddress?.name ?? '',
-      address: r.emailAddress?.address ?? '',
-    })),
-    receivedDateTime: e.receivedDateTime,
-    body: e.body,
-    bodyPreview: e.bodyPreview ?? '',
-    isRead: e.isRead,
-    hasAttachments: e.hasAttachments,
-  });
+  return ok(result.item);
 });
 
 // GET /api/accounts/:id/emails/:messageId/attachments - list attachment metadata
+// Graph-only: IMAP attachment extraction is not implemented; IMAP accounts get an
+// empty list so the frontend renders no attachment chips rather than erroring.
 emails.get('/:messageId/attachments', async (c) => {
   const accountId = parseInt(c.req.param('id')!, 10);
   const messageId = c.req.param('messageId')!;
   const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [accountId]);
   if (!acc) return notFound('账号不存在');
-  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
-  if (!tokenResult.token) return badRequest('Graph API 认证失败');
-  const result = await listAttachments(tokenResult.token, messageId);
+
+  // IMAP message ids are namespaced ("imap:<folder>:<uid>"); attachments unsupported.
+  if (messageId.startsWith('imap:')) return ok({ items: [] });
+
+  const tok = await acquireToken(c.env.DB, acc);
+  if (!tok.resolved) return badRequest(tok.error ?? '认证失败');
+  if (tok.resolved.protocol === 'imap') return ok({ items: [] });
+
+  const result = await listAttachments(tok.resolved.token, messageId);
   if (result.error) return badRequest(result.error.message);
   const items = (result.items ?? []).map((a) => ({ id: a.id, name: a.name, contentType: a.contentType, size: a.size }));
   return ok({ items });
@@ -135,10 +77,14 @@ emails.get('/:messageId/attachments/:attId', async (c) => {
   const attId = c.req.param('attId')!;
   const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [accountId]);
   if (!acc) return notFound('账号不存在');
-  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
-  if (!tokenResult.token) return badRequest('Graph API 认证失败');
 
-  const result = await getAttachment(tokenResult.token, messageId, attId);
+  if (messageId.startsWith('imap:')) return badRequest('IMAP 账号暂不支持下载附件');
+
+  const tok = await acquireToken(c.env.DB, acc);
+  if (!tok.resolved) return badRequest(tok.error ?? '认证失败');
+  if (tok.resolved.protocol === 'imap') return badRequest('IMAP 账号暂不支持下载附件');
+
+  const result = await getAttachment(tok.resolved.token, messageId, attId);
   if (result.error) {
     if (result.error.code === 'NOT_FOUND') return notFound('附件不存在');
     return badRequest(result.error.message);
@@ -169,17 +115,15 @@ emails.post('/batch-delete', async (c) => {
   const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [accountId]);
   if (!acc) return notFound('账号不存在');
 
-  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
-  if (!tokenResult.token) return badRequest('Graph API 认证失败');
-
-  // Cap per request: 1 token call + N deletes must stay under the 50-subrequest limit
+  // Cap per request. Graph: 1 token call + N deletes must stay under the
+  // 50-subrequest limit. IMAP: one shared connection handles the whole set.
   const MAX = 30;
   const targets = ids.slice(0, MAX);
-  const results = await Promise.all(targets.map((id) => deleteEmail(tokenResult.token!, id)));
-  const deleted = results.filter((r) => r.ok).length;
+  const { results: delResults, forbidden, error } = await batchDelete(c.env.DB, acc, targets);
+  if (error) return badRequest(error);
+  const deleted = [...delResults.values()].filter(Boolean).length;
   const failed = targets.length - deleted;
   const skipped = ids.length - targets.length;
-  const forbidden = results.some((r) => r.error?.code === 'FORBIDDEN');
 
   let msg = `已删除 ${deleted} 封`;
   if (failed) msg += `，失败 ${failed} 封`;
@@ -196,13 +140,10 @@ emails.delete('/:messageId', async (c) => {
   const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [accountId]);
   if (!acc) return notFound('账号不存在');
 
-  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
-  if (!tokenResult.token) return badRequest('Graph API 认证失败');
-
-  const result = await deleteEmail(tokenResult.token, messageId);
+  const result = await deleteMessage(c.env.DB, acc, messageId);
   if (!result.ok) {
-    if (result.error?.code === 'NOT_FOUND') return notFound('邮件不存在');
-    return badRequest(result.error?.message || '删除失败');
+    if (result.code === 'NOT_FOUND') return notFound('邮件不存在');
+    return badRequest(result.error || '删除失败');
   }
   return ok(null, '已删除');
 });

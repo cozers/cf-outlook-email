@@ -616,8 +616,8 @@ function showAddAccountModal() {
         Client ID 是在 Azure 注册的应用标识。不同的 Client ID 有不同的权限配置：<br>
         · <b>默认值</b>为 Mozilla Thunderbird 的公开 ID，已配置 Graph Mail.Read 权限，推荐使用<br>
         · 如果你有<b>其他来源的 Client ID</b>（自己注册的 Azure 应用、或别人提供的），也可以替换<br>
-        · 注意：仅有 IMAP 权限的 Client ID <b>无法读取邮件</b>（测试连接会成功，但查看邮件报 401）<br>
-        · 遇到这种情况，请在编辑页面点"重新授权"切换到 Thunderbird 授权
+        · <b>仅有 IMAP 权限的账号（如购买/领取的 token）现已支持</b>：系统会自动识别，Graph 不通时改用 IMAP 读取邮件，无需切换 Client ID<br>
+        · 首次读取会自动探测协议（Graph 优先，失败回退 IMAP）并记住结果
       </div>
     </div>
     <div class="form-group"><label class="form-label">Refresh Token</label><textarea class="form-textarea" id="mAccToken" rows="3"></textarea></div>
@@ -770,7 +770,7 @@ async function showEditAccountModal(id) {
     <div class="form-group">
       <label class="form-label">Client ID</label>
       <input class="form-input" id="mAccClientId" value="${esc(a.client_id)}">
-      <div style="font-size:11px;color:var(--text-dim);margin-top:5px;line-height:1.5">当前使用的 Client ID。不同来源的账号可能用不同的 ID，只要有 Graph Mail.Read 权限即可正常读取邮件。仅有 IMAP 权限的 ID 会导致测试成功但读邮件 401。</div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:5px;line-height:1.5">当前使用的 Client ID。不同来源的账号可能用不同的 ID。系统会自动识别该账号是 Graph 还是 IMAP 授权并选择对应的读取方式：有 Graph 权限的走 Graph API，仅有 IMAP 权限的（常见于购买/领取的账号）走 IMAP，均可正常读取邮件。</div>
     </div>
     <div class="form-group">
       <label class="form-label">Refresh Token</label>
@@ -813,7 +813,8 @@ async function testAccount(id, btn) {
   btn.disabled = false;
   btn.textContent = '测试';
   if (res?.success && res.data?.connected) {
-    toast('Graph API 连接正常');
+    const label = res.data.protocol === 'imap' ? 'IMAP' : 'Graph API';
+    toast(`${label} 连接正常`);
   } else {
     toast(res?.data?.error || res?.error?.message || '连接失败', 'error');
   }
