@@ -1536,6 +1536,48 @@ async function renderSettings(el) {
         <button class="btn" type="button" onclick="pushNow(this)">立即推送一轮</button>
       </div>
     </div>
+
+    <div class="card" style="max-width:600px">
+      <h3 style="margin-bottom:8px">WebDAV 自动备份</h3>
+      <div style="font-size:12.5px;color:var(--text-dim);line-height:1.7;margin-bottom:16px">
+        定时把<b>全部账号</b>导出为文本并上传到你的 WebDAV（坚果云 / Nextcloud 等）。<b style="color:var(--warning)">备份文件含明文密码与 Token</b>，请确保 WebDAV 私密。目标目录需<b>预先创建好</b>。
+      </div>
+      <div class="form-group" style="display:flex;align-items:center;gap:10px">
+        <label style="display:inline-flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="sWebdavEnabled" ${settings.webdav_backup_enabled === '1' ? 'checked' : ''}> 启用定时备份
+        </label>
+      </div>
+      <div class="form-group">
+        <label class="form-label">WebDAV 目录 URL</label>
+        <input class="form-input" id="sWebdavUrl" placeholder="如 https://dav.jianguoyun.com/dav/mailBackup/" value="${esc(settings.webdav_backup_url || '')}" style="font-family:monospace;font-size:12px">
+      </div>
+      <div style="display:flex;gap:12px">
+        <div class="form-group" style="flex:1">
+          <label class="form-label">用户名</label>
+          <input class="form-input" id="sWebdavUser" value="${esc(settings.webdav_backup_username || '')}">
+        </div>
+        <div class="form-group" style="flex:1">
+          <label class="form-label">密码 (当前: ${esc(settings.webdav_backup_password || '未设置')})</label>
+          <input class="form-input" id="sWebdavPass" type="password" placeholder="留空不修改">
+        </div>
+      </div>
+      <div style="display:flex;gap:12px">
+        <div class="form-group" style="flex:1">
+          <label class="form-label">备份间隔（小时）</label>
+          <input class="form-input" id="sWebdavInterval" type="number" min="1" value="${esc(settings.webdav_backup_interval_hours || '24')}">
+        </div>
+        <div class="form-group" style="flex:1">
+          <label class="form-label">保留份数</label>
+          <input class="form-input" id="sWebdavKeep" type="number" min="1" value="${esc(settings.webdav_backup_keep || '7')}">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-primary" type="button" onclick="saveWebdavSettings()">保存备份设置</button>
+        <button class="btn" type="button" onclick="testWebdav(this)">测试连接</button>
+        <button class="btn" type="button" onclick="webdavBackupNow(this)">立即备份</button>
+      </div>
+      ${settings.webdav_backup_last_message ? `<div style="font-size:12px;color:var(--text-dim);margin-top:10px">上次：${esc(settings.webdav_backup_last_message)}</div>` : ''}
+    </div>
   `;
 }
 
@@ -1557,6 +1599,43 @@ async function testTelegram(btn) {
   if (btn) { btn.disabled = false; btn.textContent = '发送测试消息'; }
   if (res?.success) toast(res.message || '已发送', 'success', 5000);
   else toast(res?.error?.message || '发送失败', 'error');
+}
+
+async function saveWebdavSettings() {
+  const body = {
+    webdav_backup_enabled: document.getElementById('sWebdavEnabled').checked ? '1' : '0',
+    webdav_backup_url: document.getElementById('sWebdavUrl').value.trim(),
+    webdav_backup_username: document.getElementById('sWebdavUser').value.trim(),
+    webdav_backup_interval_hours: document.getElementById('sWebdavInterval').value.trim() || '24',
+    webdav_backup_keep: document.getElementById('sWebdavKeep').value.trim() || '7',
+  };
+  const pass = document.getElementById('sWebdavPass').value;
+  if (pass && !pass.includes('*')) body.webdav_backup_password = pass;
+  const res = await api('/settings', { method: 'PUT', body: JSON.stringify(body) });
+  if (res?.success) toast(res.message || '已保存');
+  else toast(res?.error?.message || '保存失败', 'error');
+}
+
+async function testWebdav(btn) {
+  const body = {
+    webdav_backup_url: document.getElementById('sWebdavUrl').value.trim(),
+    webdav_backup_username: document.getElementById('sWebdavUser').value.trim(),
+  };
+  const pass = document.getElementById('sWebdavPass').value;
+  if (pass && !pass.includes('*')) body.webdav_backup_password = pass;
+  if (btn) { btn.disabled = true; btn.textContent = '测试中...'; }
+  const res = await api('/settings/webdav-test', { method: 'POST', body: JSON.stringify(body) });
+  if (btn) { btn.disabled = false; btn.textContent = '测试连接'; }
+  if (res?.success) toast(res.message || 'WebDAV 连接正常', 'success', 5000);
+  else toast(res?.error?.message || '测试失败', 'error', 6000);
+}
+
+async function webdavBackupNow(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '备份中...'; }
+  const res = await api('/settings/webdav-backup-now', { method: 'POST' });
+  if (btn) { btn.disabled = false; btn.textContent = '立即备份'; }
+  if (res?.success) toast(res.message || '备份完成', 'success', 5000);
+  else toast(res?.error?.message || '备份失败', 'error', 6000);
 }
 
 async function pushNow(btn) {

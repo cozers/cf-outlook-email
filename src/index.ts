@@ -3,6 +3,7 @@ import type { Env } from './types';
 import { authMiddleware } from './auth';
 import { fail } from './response';
 import { runTokenRefresh, runEmailPush } from './cron';
+import { runWebdavBackup } from './webdav';
 import authRoutes from './routes/auth';
 import groupRoutes from './routes/groups';
 import accountRoutes from './routes/accounts';
@@ -68,8 +69,10 @@ export default {
   fetch: (req: Request, env: Env, ctx: ExecutionContext) => app.fetch(req, env, ctx),
   // Cron Trigger entry: refresh a batch of account tokens (gated by settings)
   scheduled: (_event: ScheduledController, env: Env, ctx: ExecutionContext) => {
-    // Two independent gated jobs share the wake-up: token keep-alive + new-email push.
+    // Independent gated jobs share the wake-up: token keep-alive, new-email push,
+    // and WebDAV backup. Each self-checks its enabled flag + interval gate.
     ctx.waitUntil(runTokenRefresh(env));
     ctx.waitUntil(runEmailPush(env));
+    ctx.waitUntil(runWebdavBackup(env));
   },
 };

@@ -6,6 +6,7 @@ import { hashPassword } from '../utils/crypto';
 import { maskToken } from '../utils/validation';
 import { runTokenRefresh, runEmailPush } from '../cron';
 import { sendTelegramMessage } from '../telegram';
+import { testWebdav, runWebdavBackup, type WebdavConfig } from '../webdav';
 
 const settings = new Hono<{ Bindings: Env }>();
 
@@ -20,6 +21,9 @@ settings.get('/', async (c) => {
       data['login_password'] = '******';
     } else if (row.key === 'gptmail_api_key' || row.key === 'telegram_bot_token') {
       data[row.key] = row.value ? maskToken(row.value) : '';
+    } else if (row.key === 'webdav_backup_password') {
+      // Mask the stored WebDAV password; '******' signals "unchanged" on save.
+      data[row.key] = row.value ? '******' : '';
     } else {
       // external_api_key is returned in full so the admin can copy it (page is behind login)
       data[row.key] = row.value;
@@ -83,6 +87,51 @@ settings.post('/telegram-test', async (c) => {
   );
   if (!r.ok) return badRequest(`发送失败：${r.error}`);
   return ok(null, '测试消息已发送，请检查 Telegram');
+});
+
+// Resolve the effective WebDAV config: use draft values from the request body when
+// provided (so "test" works before saving), else fall back to the stored settings.
+// A masked password ('******' or containing '*') means "unchanged" → use stored.
+async function resolveWebdavConfig(
+  db: D1Database,
+  body: Record<string, string>
+): Promise<WebdavConfig> {
+  const rows = await query<SettingRow>(
+    db,
+    "SELECT key, value FROM settings WHERE key IN ('webdav_backup_url','webdav_backup_username','webdav_backup_password')"
+  );
+  const stored: Record<string, string> = {};
+  for (const r of rows) stored[r.key] = r.value;
+
+  const draftPwd = body.webdav_backup_password;
+  const password =
+    draftPwd !== undefined && !draftPwd.includes('*') ? draftPwd : stored.webdav_backup_password || '';
+  return {
+    url: (body.webdav_backup_url ?? stored.webdav_backup_url ?? '').trim(),
+    username: (body.webdav_backup_username ?? stored.webdav_backup_username ?? '').trim(),
+    password,
+  };
+}
+
+// POST /api/settings/webdav-test - PUT a probe file then DELETE it. Accepts draft
+// config in the body so the user can test before saving.
+settings.post('/webdav-test', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, string>;
+  const cfg = await resolveWebdavConfig(c.env.DB, body);
+  if (!cfg.url) return badRequest('请先填写 WebDAV 地址');
+  const r = await testWebdav(cfg);
+  if (!r.ok) return badRequest(r.message);
+  return ok(null, r.message);
+});
+
+// POST /api/settings/webdav-backup-now - run a full backup immediately (force),
+// bypassing the enabled flag and the interval gate.
+settings.post('/webdav-backup-now', async (c) => {
+  const summary = await runWebdavBackup(c.env, { force: true });
+  if (summary.startsWith('backup ok')) return ok({ summary }, summary);
+  if (summary.startsWith('skipped: no accounts')) return badRequest('没有可备份的邮箱账号');
+  if (summary.startsWith('skipped: no url')) return badRequest('请先填写并保存 WebDAV 地址');
+  return badRequest(summary.replace(/^backup failed:\s*/, '') || '备份失败');
 });
 
 // PUT /api/settings
@@ -169,6 +218,34 @@ settings.put('/', async (c) => {
       );
       updated.push(`定时刷新-${label}`);
     }
+  }
+
+  // WebDAV backup config. Password is skipped when masked (unchanged in the UI).
+  const webdavPlainKeys: Record<string, string> = {
+    webdav_backup_enabled: 'enabled',
+    webdav_backup_url: 'url',
+    webdav_backup_username: 'username',
+    webdav_backup_interval_hours: 'interval',
+    webdav_backup_keep: 'keep',
+  };
+  for (const [key, label] of Object.entries(webdavPlainKeys)) {
+    if (body[key] !== undefined) {
+      await run(
+        c.env.DB,
+        `INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)`,
+        [key, String(body[key]).trim()]
+      );
+      updated.push(`WebDAV-${label}`);
+    }
+  }
+  // Password only when provided and not masked.
+  if (body.webdav_backup_password !== undefined && !body.webdav_backup_password.includes('*')) {
+    await run(
+      c.env.DB,
+      `INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('webdav_backup_password', ?, CURRENT_TIMESTAMP)`,
+      [body.webdav_backup_password.trim()]
+    );
+    updated.push('WebDAV-password');
   }
 
   if (errors.length > 0) return badRequest(errors.join('；'));
