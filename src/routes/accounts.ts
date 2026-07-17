@@ -202,6 +202,7 @@ accounts.post('/batch', async (c) => {
     action?: string;
     ids?: number[];
     group_id?: number;
+    tag_ids?: number[];
   };
 
   if (!body.ids?.length) return badRequest('请选择账号');
@@ -253,6 +254,43 @@ accounts.post('/batch', async (c) => {
       }))
     );
     return ok(null, `已停用 ${body.ids.length} 个账号`);
+  }
+
+  // Add one or more tags to every selected account (idempotent via INSERT OR IGNORE).
+  if (body.action === 'add_tags' && body.tag_ids?.length) {
+    const tagIds = body.tag_ids.filter((t) => Number.isInteger(t));
+    if (!tagIds.length) return badRequest('请选择标签');
+    // Build all (account_id, tag_id) pairs, then chunk so each statement's bound
+    // params (2 per pair) stay under D1's 100-param limit.
+    const pairs: [number, number][] = [];
+    for (const accId of body.ids) for (const tagId of tagIds) pairs.push([accId, tagId]);
+    const PAIRS_PER_STMT = Math.floor(D1_MAX_BOUND_PARAMS / 2);
+    await batchRun(
+      c.env.DB,
+      chunk(pairs, PAIRS_PER_STMT).map((part) => ({
+        sql: `INSERT OR IGNORE INTO account_tags (account_id, tag_id) VALUES ${part.map(() => '(?, ?)').join(', ')}`,
+        params: part.flat(),
+      }))
+    );
+    return ok(null, `已为 ${body.ids.length} 个账号添加 ${tagIds.length} 个标签`);
+  }
+
+  // Remove one or more tags from every selected account.
+  if (body.action === 'remove_tags' && body.tag_ids?.length) {
+    const tagIds = body.tag_ids.filter((t) => Number.isInteger(t));
+    if (!tagIds.length) return badRequest('请选择标签');
+    // DELETE per tag: account_id IN (...) chunked, plus one slot for the tag_id.
+    const statements: { sql: string; params: unknown[] }[] = [];
+    for (const tagId of tagIds) {
+      for (const part of chunk(body.ids, D1_MAX_BOUND_PARAMS - 1)) {
+        statements.push({
+          sql: `DELETE FROM account_tags WHERE tag_id = ? AND account_id IN (${inList(part)})`,
+          params: [tagId, ...part],
+        });
+      }
+    }
+    await batchRun(c.env.DB, statements);
+    return ok(null, `已从 ${body.ids.length} 个账号移除 ${tagIds.length} 个标签`);
   }
 
   return badRequest('未知操作');

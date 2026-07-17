@@ -80,6 +80,7 @@ let state = {
   pendingEmailAccount: null,
   pendingAccountStatus: null,
   accountPage: 1,
+  accountPageSize: parseInt(localStorage.getItem('accountPageSize') || '50', 10) || 50,
 };
 
 // ========== API Helpers ==========
@@ -369,7 +370,9 @@ async function renderAccounts(el, actions) {
   </div>
   <div id="batchBar" style="display:none;margin-bottom:12px;padding:10px 14px;background:var(--primary-bg);border:1px solid var(--border-focus);border-radius:8px;display:none;align-items:center;gap:8px;font-size:13px">
     <span id="batchCount" style="color:var(--primary)"></span>
-    <button class="btn btn-sm" onclick="batchAction('move')">移动分组</button>
+    <button class="btn btn-sm" onclick="showBatchMoveModal()">移动分组</button>
+    <button class="btn btn-sm" onclick="showBatchTagModal('add')">添加标签</button>
+    <button class="btn btn-sm" onclick="showBatchTagModal('remove')">移除标签</button>
     <button class="btn btn-sm" onclick="batchAction('enable')">批量启用</button>
     <button class="btn btn-sm" onclick="batchAction('disable')">批量停用</button>
     <button class="btn btn-sm" onclick="exportSelected()">导出选中</button>
@@ -402,6 +405,7 @@ async function renderAccounts(el, actions) {
   renderAccountsPage();
 }
 
+// Default per-page size; the user-selectable dropdown overrides via state.accountPageSize.
 const ACCOUNTS_PAGE_SIZE = 50;
 
 // The currently-displayed account set: full loaded list (already scoped by the
@@ -418,12 +422,13 @@ function currentAccountsView() {
 function renderAccountsPage() {
   const view = currentAccountsView();
   const total = view.length;
-  const pageCount = Math.max(1, Math.ceil(total / ACCOUNTS_PAGE_SIZE));
+  const size = state.accountPageSize || ACCOUNTS_PAGE_SIZE;
+  const pageCount = Math.max(1, Math.ceil(total / size));
   if (state.accountPage > pageCount) state.accountPage = pageCount;
   if (state.accountPage < 1) state.accountPage = 1;
 
-  const start = (state.accountPage - 1) * ACCOUNTS_PAGE_SIZE;
-  const pageItems = view.slice(start, start + ACCOUNTS_PAGE_SIZE);
+  const start = (state.accountPage - 1) * size;
+  const pageItems = view.slice(start, start + size);
 
   const tbody = document.getElementById('accountsBody');
   if (tbody) {
@@ -439,20 +444,40 @@ function renderAccountsPage() {
   syncSelectAllCheckbox();
 }
 
+const ACCOUNTS_PAGE_SIZE_OPTIONS = [10, 20, 30, 50, 80, 100];
+
 function renderAccountPagination(total, pageCount) {
   const box = document.getElementById('accountPagination');
   if (!box) return;
-  if (pageCount <= 1) { box.innerHTML = ''; return; }
   const p = state.accountPage;
-  const start = (p - 1) * ACCOUNTS_PAGE_SIZE + 1;
-  const end = Math.min(p * ACCOUNTS_PAGE_SIZE, total);
-  box.innerHTML = `
+  const size = state.accountPageSize || ACCOUNTS_PAGE_SIZE;
+  const start = total === 0 ? 0 : (p - 1) * size + 1;
+  const end = Math.min(p * size, total);
+  // Page-size dropdown is always shown; the prev/next buttons only when >1 page.
+  const sizeSelect = `<label style="font-size:12px;color:var(--text-dim);margin-right:12px">
+    每页
+    <select class="form-select" style="width:auto;display:inline-block;min-width:64px;padding:2px 6px;margin:0 4px" onchange="changeAccountPageSize(this.value)">
+      ${ACCOUNTS_PAGE_SIZE_OPTIONS.map(n => `<option value="${n}" ${n === size ? 'selected' : ''}>${n}</option>`).join('')}
+    </select>
+    条
+  </label>`;
+  const nav = pageCount <= 1 ? '' : `
     <button class="btn btn-sm" ${p <= 1 ? 'disabled' : ''} onclick="gotoAccountPage(1)">首页</button>
     <button class="btn btn-sm" ${p <= 1 ? 'disabled' : ''} onclick="gotoAccountPage(${p - 1})">上一页</button>
     <span style="font-size:12px;color:var(--text-dim);margin:0 12px">第 ${p} / ${pageCount} 页（${start}-${end} / ${total}）</span>
     <button class="btn btn-sm" ${p >= pageCount ? 'disabled' : ''} onclick="gotoAccountPage(${p + 1})">下一页</button>
     <button class="btn btn-sm" ${p >= pageCount ? 'disabled' : ''} onclick="gotoAccountPage(${pageCount})">末页</button>
   `;
+  box.innerHTML = sizeSelect + nav;
+}
+
+// Change page size, persist the choice, and jump back to page 1.
+function changeAccountPageSize(value) {
+  const n = parseInt(value, 10) || ACCOUNTS_PAGE_SIZE;
+  state.accountPageSize = n;
+  try { localStorage.setItem('accountPageSize', String(n)); } catch { /* ignore */ }
+  state.accountPage = 1;
+  renderAccountsPage();
 }
 
 function gotoAccountPage(n) {
@@ -601,29 +626,51 @@ async function batchAction(action) {
 
   if (action === 'delete') {
     if (!confirm('确认批量删除 ' + ids.length + ' 个账号？此操作不可撤销。')) return;
-    const res = await api('/accounts/batch', { method: 'POST', body: JSON.stringify({ action: 'delete', ids }) });
-    if (res?.success) { toast(res.message); clearSelection(); navigate('accounts'); }
-    else toast(res?.error?.message || '操作失败', 'error');
-    return;
   }
 
-  if (action === 'move') {
-    showModal('移动到分组', `
-      <div class="form-group"><label class="form-label">目标分组</label>
-      <select class="form-select" id="batchMoveGroup">${state.groups.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select></div>
-    `, async () => {
-      const groupId = parseInt(document.getElementById('batchMoveGroup').value);
-      const res = await api('/accounts/batch', { method: 'POST', body: JSON.stringify({ action: 'move', ids, group_id: groupId }) });
-      if (res?.success) { toast(res.message); clearSelection(); navigate('accounts'); return true; }
-      toast(res?.error?.message || '操作失败', 'error'); return false;
-    });
-    return;
-  }
-
-  // enable / disable
   const res = await api('/accounts/batch', { method: 'POST', body: JSON.stringify({ action, ids }) });
   if (res?.success) { toast(res.message); clearSelection(); navigate('accounts'); }
   else toast(res?.error?.message || '操作失败', 'error');
+}
+
+// Move selected accounts to a group (opens a picker modal).
+function showBatchMoveModal() {
+  const ids = [...selectedAccountIds];
+  if (!ids.length) return;
+  showModal('移动到分组', `
+    <div class="form-group"><label class="form-label">目标分组（选中 ${ids.length} 个账号）</label>
+    <select class="form-select" id="batchMoveGroup">${state.groups.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select></div>
+  `, async () => {
+    const groupId = parseInt(document.getElementById('batchMoveGroup').value);
+    const res = await api('/accounts/batch', { method: 'POST', body: JSON.stringify({ action: 'move', ids, group_id: groupId }) });
+    if (res?.success) { toast(res.message); clearSelection(); navigate('accounts'); return true; }
+    toast(res?.error?.message || '操作失败', 'error'); return false;
+  });
+}
+
+// Batch add / remove tags on selected accounts. mode = 'add' | 'remove'.
+function showBatchTagModal(mode) {
+  const ids = [...selectedAccountIds];
+  if (!ids.length) return;
+  if (!state.tags.length) { toast('暂无标签，请先去「标签管理」创建', 'error'); return; }
+  const title = mode === 'add' ? '批量添加标签' : '批量移除标签';
+  showModal(title, `
+    <div class="form-group">
+      <label class="form-label">选择标签（对选中的 ${ids.length} 个账号${mode === 'add' ? '添加' : '移除'}）</label>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">
+        ${state.tags.map(t => `<label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;padding:4px 10px;border:1px solid var(--border-light);border-radius:20px;cursor:pointer">
+          <input type="checkbox" class="batch-tag-check" value="${t.id}"><span style="color:${esc(t.color)}">${esc(t.name)}</span>
+        </label>`).join('')}
+      </div>
+    </div>
+  `, async () => {
+    const tagIds = [...document.querySelectorAll('.batch-tag-check:checked')].map(cb => parseInt(cb.value));
+    if (!tagIds.length) { toast('请至少选择一个标签', 'error'); return false; }
+    const action = mode === 'add' ? 'add-tags' : 'remove-tags';
+    const res = await api('/accounts/batch', { method: 'POST', body: JSON.stringify({ action, ids, tag_ids: tagIds }) });
+    if (res?.success) { toast(res.message); clearSelection(); navigate('accounts'); return true; }
+    toast(res?.error?.message || '操作失败', 'error'); return false;
+  });
 }
 
 // Filter by status — purely local (on already-loaded data); reset to page 1.
@@ -1017,6 +1064,29 @@ function loadMoreFooterHtml() {
   </div>`;
 }
 
+// Sticky header row above the email list: a "select all (loaded)" checkbox that
+// selects/deselects every currently-loaded message at once, for quick batch delete.
+function emailListHeaderHtml() {
+  const total = state.emailList.length;
+  const allSelected = total > 0 && state.selectedEmailIds.size >= total
+    && state.emailList.every(e => state.selectedEmailIds.has(e.id));
+  return `<div class="email-list-header" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border-light);position:sticky;top:0;background:var(--bg);z-index:1">
+    <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);cursor:pointer">
+      <input type="checkbox" id="emailSelectAll" ${allSelected ? 'checked' : ''} onchange="toggleSelectAllEmails(this.checked)">
+      全选本页（已加载 ${total} 封）
+    </label>
+  </div>`;
+}
+
+// Select or clear every currently-loaded message. Works on the full loaded set
+// (state.emailList), not just what's visible, so "load more" + select-all covers all.
+function toggleSelectAllEmails(checked) {
+  if (checked) state.emailList.forEach(e => state.selectedEmailIds.add(e.id));
+  else state.selectedEmailIds.clear();
+  document.querySelectorAll('.email-check').forEach(cb => { cb.checked = checked; });
+  updateEmailBatchActions();
+}
+
 // Copy the currently selected account's email address
 function copySelectedEmail(btn) {
   const acc = state.accounts.find(a => String(a.id) === String(state.selectedAccount));
@@ -1060,7 +1130,7 @@ async function loadEmailList(accountId) {
     return;
   }
 
-  pane.innerHTML = renderEmailItems(state.emailList, 0) + loadMoreFooterHtml();
+  pane.innerHTML = emailListHeaderHtml() + renderEmailItems(state.emailList, 0) + loadMoreFooterHtml();
 }
 
 // Append the next page without re-rendering existing rows (preserves scroll position)
@@ -1083,6 +1153,11 @@ async function loadMoreEmails() {
   state.emailList.push(...items);
   if (wrap) wrap.insertAdjacentHTML('beforebegin', renderEmailItems(items, startIndex));
   updateEmailCount();
+
+  // Refresh the sticky header: count grew, and the newly-appended rows are
+  // unselected, so "select all" must reflect that it's no longer fully checked.
+  const header = document.querySelector('.email-list-header');
+  if (header) header.outerHTML = emailListHeaderHtml();
 
   // Drop the footer when the last page wasn't full (no further pages)
   if (items.length < EMAIL_PAGE_SIZE) wrap?.remove();
@@ -1218,7 +1293,7 @@ function removeEmailsFromList(ids) {
   const pane = document.getElementById('emailListPane');
   if (pane) {
     pane.innerHTML = state.emailList.length
-      ? renderEmailItems(state.emailList, 0) + loadMoreFooterHtml()
+      ? emailListHeaderHtml() + renderEmailItems(state.emailList, 0) + loadMoreFooterHtml()
       : '<div class="empty-state">该文件夹暂无邮件</div>';
   }
   const detail = document.getElementById('emailDetailPane');
