@@ -1,0 +1,184 @@
+name: 同步上游 (Sync upstream)
+
+# 手动触发：在 GitHub 仓库页 → Actions → 左侧选 "同步上游" → 右侧 "Run workflow"。
+# 它会抓取上游最新代码，尝试合并，然后开一个 PR 给你审阅 —— 绝不直接改 main，
+# 你的改动永远安全。能干净合并的 PR 是绿灯（并已跑过 build+test），点 Merge 即可；
+# 有冲突的 PR 会列出冲突文件，由你手动解决后再合并。
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_branch:
+        description: "上游分支名（一般就是 main）"
+        required: false
+        default: "main"
+
+# 允许推分支和开 PR（用仓库自带的 GITHUB_TOKEN，无需额外配置密钥）
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      # 上游仓库（你 fork 的源）。若上游换了地址，改这里即可。
+      UPSTREAM_URL: https://github.com/roseforyou/cf-outlook-email.git
+      UPSTREAM_BRANCH: ${{ github.event.inputs.upstream_branch || 'main' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: 检出仓库（含完整历史）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 配置 git 身份
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: 拉取上游
+        run: |
+          git remote add upstream "$UPSTREAM_URL" 2>/dev/null || git remote set-url upstream "$UPSTREAM_URL"
+          git fetch upstream "$UPSTREAM_BRANCH"
+
+      - name: 检查上游是否有新提交
+        id: check
+        run: |
+          NEW=$(git rev-list --count "HEAD..upstream/${UPSTREAM_BRANCH}")
+          echo "new_commits=$NEW" >> "$GITHUB_OUTPUT"
+          if [ "$NEW" = "0" ]; then
+            echo "✅ 已经是最新，上游没有新提交，无需同步。" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ℹ️ 上游有 **$NEW** 个新提交待同步。" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 创建同步分支并尝试合并
+        id: merge
+        if: steps.check.outputs.new_commits != '0'
+        run: |
+          BRANCH="sync/upstream-$(date +%Y%m%d)-${{ github.run_number }}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git checkout -b "$BRANCH"
+          if git merge --no-edit "upstream/${UPSTREAM_BRANCH}"; then
+            echo "status=clean" >> "$GITHUB_OUTPUT"
+            echo "✅ 合并干净，无冲突。" >> "$GITHUB_STEP_SUMMARY"
+          else
+            # 有冲突：放弃这次自动合并，改为把分支重置成“上游最新”，
+            # 这样 PR（分支 → main）会由 GitHub 展示冲突，供你手动解决。
+            CONFLICTS=$(git diff --name-only --diff-filter=U | sed 's/^/- /')
+            git merge --abort
+            git reset --hard "upstream/${UPSTREAM_BRANCH}"
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            {
+              echo "conflicts<<EOF"
+              echo "$CONFLICTS"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "⚠️ 存在冲突，需手动解决。冲突文件：" >> "$GITHUB_STEP_SUMMARY"
+            echo "$CONFLICTS" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 推送同步分支
+        if: steps.check.outputs.new_commits != '0'
+        run: git push origin "HEAD:${{ steps.merge.outputs.branch }}" --force
+
+      # 仅在“干净合并”时验证：装依赖、类型检查、跑测试。
+      # 不阻断流程（continue-on-error），失败也会在 PR 里如实标注，交给你判断。
+      - name: 装 pnpm
+        if: steps.merge.outputs.status == 'clean'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: 装 Node
+        if: steps.merge.outputs.status == 'clean'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装依赖
+        if: steps.merge.outputs.status == 'clean'
+        id: install
+        continue-on-error: true
+        run: pnpm install --frozen-lockfile || pnpm install
+
+      - name: 类型检查 (build)
+        if: steps.merge.outputs.status == 'clean'
+        id: build
+        continue-on-error: true
+        run: pnpm run build
+
+      - name: 单元测试
+        if: steps.merge.outputs.status == 'clean'
+        id: test
+        continue-on-error: true
+        run: pnpm test
+
+      - name: 开 PR（干净合并）
+        if: steps.merge.outputs.status == 'clean'
+        run: |
+          BUILD="${{ steps.build.outcome }}"
+          TEST="${{ steps.test.outcome }}"
+          badge() { [ "$1" = "success" ] && echo "✅ 通过" || echo "❌ 失败（请在合并前检查）"; }
+          cat > /tmp/pr-body.md <<EOF
+          ## 🔄 同步上游更新（自动生成）
+
+          本 PR 由「同步上游」Action 生成，已将上游最新代码干净合并到你的分支，**无冲突**。
+
+          ### 合并后自检结果
+          - 类型检查 (\`pnpm run build\`)：$(badge "$BUILD")
+          - 单元测试 (\`pnpm test\`)：$(badge "$TEST")
+
+          > 若两项均通过，可直接点 **Merge**。若有失败，请拉下本分支本地排查后再合并。
+
+          ### 合并后记得
+          1. 如果上游新增了数据库迁移（\`migrations/\` 下有新文件），部署前先跑：
+             \`pnpm exec wrangler d1 migrations apply outlook-email-db --remote\`
+          2. \`pnpm exec wrangler deploy\`
+
+          _上游：\`${UPSTREAM_URL}\`（分支 \`${UPSTREAM_BRANCH}\`）_
+          EOF
+          gh pr create \
+            --base "${{ github.ref_name }}" \
+            --head "${{ steps.merge.outputs.branch }}" \
+            --title "🔄 同步上游更新 ($(date +%Y-%m-%d))" \
+            --body-file /tmp/pr-body.md
+
+      - name: 开 PR（有冲突，待手动解决）
+        if: steps.merge.outputs.status == 'conflict'
+        run: |
+          cat > /tmp/pr-body.md <<EOF
+          ## ⚠️ 同步上游更新 —— 存在冲突，需手动解决
+
+          本 PR 由「同步上游」Action 生成。上游有新代码，但与你的改动**存在冲突**，
+          无法自动合并。请手动解决冲突后再合并。
+
+          ### 冲突文件
+          ${{ steps.merge.outputs.conflicts }}
+
+          ### 怎么解决（二选一）
+          **A. 在 GitHub 网页解决**：点上方 "Resolve conflicts" 按钮，逐个文件保留/揉合两边改动，保存后合并。
+
+          **B. 本地解决（推荐，可跑测试）**：
+          \`\`\`bash
+          git fetch origin
+          git checkout ${{ steps.merge.outputs.branch }}
+          git merge origin/${{ github.ref_name }}
+          # 解决标记 <<<<<<< ======= >>>>>>> 处的冲突，然后：
+          git add -A && git commit
+          pnpm install && pnpm run build && pnpm test   # 确认没揉坏
+          git push
+          \`\`\`
+
+          ### 合并后记得
+          1. 上游若新增数据库迁移，部署前先 \`pnpm exec wrangler d1 migrations apply outlook-email-db --remote\`
+          2. \`pnpm exec wrangler deploy\`
+
+          _上游：\`${UPSTREAM_URL}\`（分支 \`${UPSTREAM_BRANCH}\`）_
+          EOF
+          gh pr create \
+            --base "${{ github.ref_name }}" \
+            --head "${{ steps.merge.outputs.branch }}" \
+            --title "⚠️ 同步上游更新（有冲突，待解决）($(date +%Y-%m-%d))" \
+            --body-file /tmp/pr-body.md
