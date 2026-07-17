@@ -14,6 +14,7 @@
 - [方式 A：直接在现有工程目录更新](#方式-a直接在现有工程目录更新)
 - [方式 B：把改动搬到你自己的工程](#方式-b把改动搬到你自己的工程)
 - [部署后验证（重要）](#部署后验证重要)
+- [同步上游更新（一键 Action）](#同步上游更新一键-action)
 - [常见问题](#常见问题)
 - [回滚](#回滚)
 - [变更记录](#变更记录)
@@ -200,6 +201,58 @@ pnpm exec wrangler deploy
    - ✅ 期望：连接正常，不再出现 `AADSTS90023: No applicable permissions were found`。
 
 如果第 1、2 步任一失败，把「测试连接」弹出的**完整报错**记下来（最可能是 IMAP 认证响应解析、或垃圾箱文件夹名在你租户下叫法不同导致的），据此再针对性修复。
+
+---
+
+## 同步上游更新（一键 Action）
+
+本仓库是从上游 [`roseforyou/cf-outlook-email`](https://github.com/roseforyou/cf-outlook-email) 改造而来。上游发新版时，可以用内置的 GitHub Action 把它的更新拉进来。
+
+> ⚠️ **重要前提**：因为本仓库**改过上游的文件**（`src/graph.ts`、`public/assets/app.js` 等），上游若也改了同一处，合并时会**产生冲突**，需要手动解决。这是所有"改过上游代码的 fork"的常态，不是操作出错。
+
+### 怎么触发
+
+1. 打开仓库页 → 顶部 **Actions** 标签
+2. 左侧点 **「同步上游 (Sync upstream)」**
+3. 右侧 **「Run workflow」** → 保持分支 `main` → 点绿色 **Run workflow**
+
+跑完后去 **Pull requests** 标签看结果。
+
+### 它会怎么做（三种情况）
+
+这个 Action 的核心原则是：**绝不直接改 `main`，只开 PR**。你的改动永远安全。
+
+| 情况 | 结果 |
+|------|------|
+| 上游没有新提交 | 什么都不做，Action 摘要显示「已经是最新」 |
+| 能干净合并 | 自动开 PR（标题带 🔄），并**已帮你跑过 build + test**，结果写在 PR 描述里。两项都 ✅ 就点 **Merge** |
+| 有冲突 | 开 PR（标题带 ⚠️），**列出具体冲突文件**，附两种解决方法（网页 / 本地）。你的 `main` 始终不动 |
+
+### 有冲突时怎么解决
+
+推荐**本地解决**（能顺便跑测试确认没揉坏）。PR 描述里会给出针对该分支的命令，大致是：
+
+```bash
+git fetch origin
+git checkout <PR 里的 sync 分支名>
+git merge origin/main
+# 编辑器里解决 <<<<<<< ======= >>>>>>> 标记处的冲突
+git add -A && git commit
+pnpm install && pnpm run build && pnpm test   # 确认没揉坏
+git push
+```
+
+冲突最可能出现在你改得最多的 `src/graph.ts` 和 `public/assets/app.js`。
+
+### 合并 PR 之后（Action 不负责部署）
+
+这个 Action 只**合并代码**，**不会自动部署**。合并上游更新后，仍需你手动：
+
+1. 若上游**新增了数据库迁移**（`migrations/` 下有新 `.sql`）→ 先跑
+   `pnpm exec wrangler d1 migrations apply outlook-email-db --remote`
+2. `pnpm exec wrangler deploy`
+
+> 上游地址写死在 `.github/workflows/sync-upstream.yml` 顶部的 `UPSTREAM_URL`。上游若换了仓库地址，改这一行即可。
 
 ---
 
