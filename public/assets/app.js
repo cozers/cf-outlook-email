@@ -79,6 +79,7 @@ let state = {
   selectedEmailIds: new Set(),
   pendingEmailAccount: null,
   pendingAccountStatus: null,
+  accountPage: 1,
 };
 
 // ========== API Helpers ==========
@@ -386,22 +387,95 @@ async function renderAccounts(el, actions) {
       <th style="width:32px"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)"></th>
       <th>邮箱</th><th>分组</th><th>状态</th><th>备注</th><th>操作</th>
     </tr></thead>
-    <tbody id="accountsBody">${renderAccountRows(state.accounts)}</tbody>
-  </table></div>`;
+    <tbody id="accountsBody"></tbody>
+  </table></div>
+  <div id="accountPagination" style="display:flex;align-items:center;justify-content:center;padding:14px 0"></div>`;
+
+  state.accountPage = 1;
 
   // Apply a status filter requested from the dashboard cards (活跃 / 异常)
   if (state.pendingAccountStatus) {
     const sel = document.getElementById('accountStatusFilter');
-    if (sel) { sel.value = state.pendingAccountStatus; filterAccountsByStatus(state.pendingAccountStatus); }
+    if (sel) { sel.value = state.pendingAccountStatus; }
     state.pendingAccountStatus = null;
   }
+  renderAccountsPage();
+}
+
+const ACCOUNTS_PAGE_SIZE = 50;
+
+// The currently-displayed account set: full loaded list (already scoped by the
+// backend group/tag/search query) with the local status filter applied on top.
+function currentAccountsView() {
+  const status = document.getElementById('accountStatusFilter')?.value;
+  return status ? state.accounts.filter(a => a.status === status) : state.accounts;
+}
+
+// Render the current page of the account view into #accountsBody, plus the
+// pagination footer. Called on initial render, every filter/search, and page
+// change — data stays fully in memory (state.accounts), so paging is instant
+// and never re-hits the backend.
+function renderAccountsPage() {
+  const view = currentAccountsView();
+  const total = view.length;
+  const pageCount = Math.max(1, Math.ceil(total / ACCOUNTS_PAGE_SIZE));
+  if (state.accountPage > pageCount) state.accountPage = pageCount;
+  if (state.accountPage < 1) state.accountPage = 1;
+
+  const start = (state.accountPage - 1) * ACCOUNTS_PAGE_SIZE;
+  const pageItems = view.slice(start, start + ACCOUNTS_PAGE_SIZE);
+
+  const tbody = document.getElementById('accountsBody');
+  if (tbody) {
+    tbody.innerHTML = total === 0
+      ? '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-dim)">没有符合条件的账号</td></tr>'
+      : renderAccountRows(pageItems);
+  }
+
+  const cnt = document.getElementById('accountCount');
+  if (cnt) cnt.textContent = total + ' 个账号';
+
+  renderAccountPagination(total, pageCount);
+  syncSelectAllCheckbox();
+}
+
+function renderAccountPagination(total, pageCount) {
+  const box = document.getElementById('accountPagination');
+  if (!box) return;
+  if (pageCount <= 1) { box.innerHTML = ''; return; }
+  const p = state.accountPage;
+  const start = (p - 1) * ACCOUNTS_PAGE_SIZE + 1;
+  const end = Math.min(p * ACCOUNTS_PAGE_SIZE, total);
+  box.innerHTML = `
+    <button class="btn btn-sm" ${p <= 1 ? 'disabled' : ''} onclick="gotoAccountPage(1)">首页</button>
+    <button class="btn btn-sm" ${p <= 1 ? 'disabled' : ''} onclick="gotoAccountPage(${p - 1})">上一页</button>
+    <span style="font-size:12px;color:var(--text-dim);margin:0 12px">第 ${p} / ${pageCount} 页（${start}-${end} / ${total}）</span>
+    <button class="btn btn-sm" ${p >= pageCount ? 'disabled' : ''} onclick="gotoAccountPage(${p + 1})">下一页</button>
+    <button class="btn btn-sm" ${p >= pageCount ? 'disabled' : ''} onclick="gotoAccountPage(${pageCount})">末页</button>
+  `;
+}
+
+function gotoAccountPage(n) {
+  state.accountPage = n;
+  renderAccountsPage();
+  // Scroll the table back to the top on page change
+  document.getElementById('accountsBody')?.closest('.table-wrap')?.scrollIntoView({ block: 'nearest' });
+}
+
+// Reflect current-page selection state on the header "select all" checkbox:
+// checked only when every row on this page is already selected.
+function syncSelectAllCheckbox() {
+  const master = document.getElementById('selectAll');
+  if (!master) return;
+  const boxes = document.querySelectorAll('.acc-check');
+  master.checked = boxes.length > 0 && [...boxes].every(cb => cb.checked);
 }
 
 var selectedAccountIds = new Set();
 
 function renderAccountRows(accounts) {
   return accounts.map(a => `<tr>
-    <td><input type="checkbox" class="acc-check" value="${a.id}" onchange="onAccountCheck()" ${selectedAccountIds.has(a.id) ? 'checked' : ''}></td>
+    <td><input type="checkbox" class="acc-check" value="${a.id}" onchange="onAccountCheck(${a.id}, this.checked)" ${selectedAccountIds.has(a.id) ? 'checked' : ''}></td>
     <td>
       <div style="display:flex;align-items:center;gap:6px">
         <a class="email-link" onclick="goToEmail(${a.id})" title="查看该账号邮件">${esc(a.email)}</a>
@@ -482,15 +556,25 @@ function downloadExport() {
 }
 
 // Batch selection
-function onAccountCheck() {
-  selectedAccountIds.clear();
-  document.querySelectorAll('.acc-check:checked').forEach(cb => selectedAccountIds.add(parseInt(cb.value)));
+// Toggle a single row. Selection is tracked in a cross-page Set so choices
+// survive paging and filtering (checkbox onchange passes id + checked).
+function onAccountCheck(id, checked) {
+  if (checked) selectedAccountIds.add(id);
+  else selectedAccountIds.delete(id);
+  syncSelectAllCheckbox();
   updateBatchBar();
 }
 
+// "Select all" acts on the CURRENT PAGE only (per the chosen UX): add/remove
+// exactly the ids rendered on this page, leaving other pages' selections intact.
 function toggleSelectAll(checked) {
-  document.querySelectorAll('.acc-check').forEach(cb => { cb.checked = checked; });
-  onAccountCheck();
+  document.querySelectorAll('.acc-check').forEach(cb => {
+    cb.checked = checked;
+    const id = parseInt(cb.value);
+    if (checked) selectedAccountIds.add(id);
+    else selectedAccountIds.delete(id);
+  });
+  updateBatchBar();
 }
 
 function clearSelection() {
@@ -542,29 +626,24 @@ async function batchAction(action) {
   else toast(res?.error?.message || '操作失败', 'error');
 }
 
-// Filter by status
+// Filter by status — purely local (on already-loaded data); reset to page 1.
 function filterAccountsByStatus(status) {
-  const filtered = status ? state.accounts.filter(a => a.status === status) : state.accounts;
-  const tbody = document.getElementById('accountsBody');
-  if (tbody) {
-    tbody.innerHTML = renderAccountRows(filtered);
-    document.getElementById('accountCount').textContent = filtered.length + ' 个账号';
-  }
+  state.accountPage = 1;
+  renderAccountsPage();
 }
 
 async function filterAccountsByGroup(gid) {
   await loadAccounts(gid || undefined);
-  document.getElementById('accountsBody').innerHTML = renderAccountRows(state.accounts);
+  state.accountPage = 1;
+  renderAccountsPage();
 }
 
 async function filterAccountsByTag(tagId) {
   const res = await api(`/accounts${tagId ? '?tag_id=' + tagId : ''}`);
   if (res?.success) {
     state.accounts = res.data || [];
-    const tbody = document.getElementById('accountsBody');
-    if (tbody) tbody.innerHTML = renderAccountRows(state.accounts);
-    const cnt = document.getElementById('accountCount');
-    if (cnt) cnt.textContent = state.accounts.length + ' 个账号';
+    state.accountPage = 1;
+    renderAccountsPage();
   }
 }
 
@@ -575,8 +654,8 @@ function searchAccounts(keyword) {
     const res = await api(`/accounts${keyword ? '?keyword=' + encodeURIComponent(keyword) : ''}`);
     if (res?.success) {
       state.accounts = res.data || [];
-      const tbody = document.getElementById('accountsBody');
-      if (tbody) tbody.innerHTML = renderAccountRows(state.accounts);
+      state.accountPage = 1;
+      renderAccountsPage();
     }
   }, 300);
 }
