@@ -375,6 +375,7 @@ async function renderAccounts(el, actions) {
     <button class="btn btn-sm" onclick="showBatchTagModal('remove')">移除标签</button>
     <button class="btn btn-sm" onclick="batchAction('enable')">批量启用</button>
     <button class="btn btn-sm" onclick="batchAction('disable')">批量停用</button>
+    <button class="btn btn-sm" onclick="batchRefresh(this)">批量刷新</button>
     <button class="btn btn-sm" onclick="exportSelected()">导出选中</button>
     <button class="btn btn-sm btn-danger" onclick="batchAction('delete')">批量删除</button>
     <button class="btn btn-sm" onclick="clearSelection()">取消选择</button>
@@ -514,6 +515,7 @@ function renderAccountRows(accounts) {
     <td style="white-space:nowrap">
       <button class="btn btn-sm" onclick="showEditAccountModal(${a.id})">编辑</button>
       <button class="btn btn-sm" onclick="testAccount(${a.id},this)">测试</button>
+      <button class="btn btn-sm" onclick="refreshAccount(${a.id},this)">刷新</button>
       <button class="btn btn-sm" onclick="exportAccounts([${a.id}])">导出</button>
       <button class="btn btn-sm" onclick="toggleAccountStatus(${a.id},'${a.status}')">${a.status === 'active' ? '停用' : '启用'}</button>
       <button class="btn btn-sm btn-danger" onclick="deleteAccount(${a.id})">删除</button>
@@ -947,6 +949,33 @@ async function testAccount(id, btn) {
   navigate('accounts');
 }
 
+// Refresh (rotate) a single account's token now. Reuses the /refresh route which
+// runs the same acquireToken core as /test but is labelled as an explicit refresh.
+async function refreshAccount(id, btn) {
+  btn.disabled = true;
+  btn.textContent = '刷新中...';
+  const res = await api(`/accounts/${id}/refresh`, { method: 'POST' });
+  btn.disabled = false;
+  btn.textContent = '刷新';
+  if (res?.success && res.data?.refreshed) {
+    toast(res.message || 'Token 已刷新');
+  } else {
+    toast(res?.data?.error || res?.error?.message || '刷新失败', 'error', 5000);
+  }
+  navigate('accounts');
+}
+
+// Batch-refresh tokens for the selected accounts (capped server-side at 40/req).
+async function batchRefresh(btn) {
+  const ids = [...selectedAccountIds];
+  if (!ids.length) return;
+  if (btn) { btn.disabled = true; btn.textContent = '刷新中...'; }
+  const res = await api('/accounts/batch', { method: 'POST', body: JSON.stringify({ action: 'refresh', ids }) });
+  if (btn) { btn.disabled = false; btn.textContent = '批量刷新'; }
+  if (res?.success) { toast(res.message || '刷新完成', 'success', 5000); clearSelection(); navigate('accounts'); }
+  else toast(res?.error?.message || '刷新失败', 'error', 5000);
+}
+
 async function toggleAccountStatus(id, currentStatus) {
   const newStatus = currentStatus === 'active' ? 'disabled' : 'active';
   const res = await api(`/accounts/${id}`, { method: 'PUT', body: JSON.stringify({ status: newStatus }) });
@@ -1360,10 +1389,57 @@ async function renderTempEmails(el, actions) {
   `;
 }
 
+// Open a modal to pick provider + optional prefix, then generate.
+// Confirm button already shows "处理中..." via showModal — no silent hang.
 async function generateTempEmail() {
-  const res = await api('/temp-emails', { method: 'POST', body: '{}' });
-  if (res?.success) { toast(res.message || '生成成功'); navigate('temp-emails'); }
-  else toast(res?.error?.message || '生成失败', 'error');
+  showModal('生成临时邮箱', `
+    <div class="form-group">
+      <label class="form-label">服务商</label>
+      <select class="form-select" id="tempProvider" onchange="onTempProviderChange()">
+        <option value="gptmail">GPTMail（默认，需配置 API Key）</option>
+        <option value="duckmail">DuckMail（mail.tm 公共服务，免配置）</option>
+        <option value="cloudflare">Cloudflare（自建实例，需先配置）</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">邮箱前缀（可选，留空随机）</label>
+      <input class="form-input" id="tempPrefix" placeholder="如 mytest123">
+    </div>
+    <div class="form-group" id="tempDomainWrap" style="display:none">
+      <label class="form-label">域名（可选，Cloudflare 用）</label>
+      <input class="form-input" id="tempDomain" placeholder="留空则用设置里的默认域名">
+    </div>
+    <div style="font-size:12px;color:var(--text-dim);line-height:1.6" id="tempProviderHint"></div>
+  `, async () => {
+    const provider = document.getElementById('tempProvider').value;
+    const prefix = document.getElementById('tempPrefix').value.trim();
+    const domain = (document.getElementById('tempDomain')?.value || '').trim();
+    const body = { provider };
+    if (prefix) body.prefix = prefix;
+    if (provider === 'cloudflare' && domain) body.domain = domain;
+    const res = await api('/temp-emails', { method: 'POST', body: JSON.stringify(body) });
+    if (res?.success) {
+      toast(res.message || '生成成功');
+      navigate('temp-emails');
+      return true;
+    }
+    toast(res?.error?.message || '生成失败', 'error', 6000);
+    return false;
+  });
+  onTempProviderChange();
+}
+
+function onTempProviderChange() {
+  const p = document.getElementById('tempProvider')?.value;
+  const wrap = document.getElementById('tempDomainWrap');
+  const hint = document.getElementById('tempProviderHint');
+  if (wrap) wrap.style.display = p === 'cloudflare' ? 'block' : 'none';
+  if (hint) {
+    hint.textContent =
+      p === 'duckmail' ? 'DuckMail 使用 mail.tm 公共服务，无需配置；生成后可在列表里点「收件箱」查看邮件。'
+      : p === 'cloudflare' ? 'Cloudflare 需先在「系统设置 → 临时邮箱服务商」填写实例地址、管理员密码、邮箱域名。'
+      : 'GPTMail 需在「系统设置」配置 API Key。若一直无响应，请检查 Key 或切换到 DuckMail。';
+  }
 }
 
 async function deleteTempEmail(id) {
@@ -1578,6 +1654,29 @@ async function renderSettings(el) {
       </div>
       ${settings.webdav_backup_last_message ? `<div style="font-size:12px;color:var(--text-dim);margin-top:10px">上次：${esc(settings.webdav_backup_last_message)}</div>` : ''}
     </div>
+    <div class="card" style="max-width:600px">
+      <h3 style="margin-bottom:8px">临时邮箱服务商</h3>
+      <div style="font-size:12.5px;color:var(--text-dim);line-height:1.7;margin-bottom:16px">
+        配置 Cloudflare 自建临时邮箱实例与 DuckMail。GPTMail 的 API Key 在页面最上方设置。
+      </div>
+      <div class="form-group">
+        <label class="form-label">Cloudflare 实例地址</label>
+        <input class="form-input" id="sCfWorkerDomain" placeholder="https://x.workers.dev" value="${esc(settings.cloudflare_worker_domain || '')}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Cloudflare 管理员密码 (当前: ${esc(settings.cloudflare_admin_password || '未设置')})</label>
+        <input class="form-input" id="sCfAdminPassword" type="password" placeholder="留空不修改">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Cloudflare 邮箱域名（逗号分隔多个）</label>
+        <input class="form-input" id="sCfEmailDomains" placeholder="example.com,mail.example.com" value="${esc(settings.cloudflare_email_domains || '')}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">DuckMail 接口地址（可选）</label>
+        <input class="form-input" id="sDuckmailBaseUrl" placeholder="https://api.duckmail.sbs（默认）" value="${esc(settings.duckmail_base_url || '')}">
+      </div>
+      <button class="btn btn-primary" type="button" onclick="saveTempProviderSettings()">保存服务商设置</button>
+    </div>
   `;
 }
 
@@ -1611,6 +1710,19 @@ async function saveWebdavSettings() {
   };
   const pass = document.getElementById('sWebdavPass').value;
   if (pass && !pass.includes('*')) body.webdav_backup_password = pass;
+  const res = await api('/settings', { method: 'PUT', body: JSON.stringify(body) });
+  if (res?.success) toast(res.message || '已保存');
+  else toast(res?.error?.message || '保存失败', 'error');
+}
+
+async function saveTempProviderSettings() {
+  const body = {
+    cloudflare_worker_domain: document.getElementById('sCfWorkerDomain').value.trim(),
+    cloudflare_email_domains: document.getElementById('sCfEmailDomains').value.trim(),
+    duckmail_base_url: document.getElementById('sDuckmailBaseUrl').value.trim(),
+  };
+  const cfPass = document.getElementById('sCfAdminPassword').value;
+  if (cfPass && !cfPass.includes('*')) body.cloudflare_admin_password = cfPass;
   const res = await api('/settings', { method: 'PUT', body: JSON.stringify(body) });
   if (res?.success) toast(res.message || '已保存');
   else toast(res?.error?.message || '保存失败', 'error');

@@ -1,7 +1,17 @@
 import { Hono } from 'hono';
 import type { Env, TempEmailRow, SettingRow } from '../types';
 import { query, first, run } from '../db';
-import { ok, badRequest, notFound, serverError } from '../response';
+import { ok, badRequest, notFound } from '../response';
+import {
+  duckmailGenerate,
+  duckmailList,
+  duckmailDetail,
+  cloudflareGenerate,
+  cloudflareList,
+  cloudflareDetail,
+  type TempMessage,
+  type TempMessageDetail,
+} from '../tempmail';
 
 const GPTMAIL_BASE_URL = 'https://mail.chatgpt.org.uk';
 
@@ -52,17 +62,72 @@ async function gptmailRequest(
 // GET /api/temp-emails
 tempEmails.get('/', async (c) => {
   const rows = await query<TempEmailRow>(c.env.DB, 'SELECT * FROM temp_emails ORDER BY created_at DESC');
-  return ok(rows);
+  // Strip credential columns before returning to the client.
+  const safe = rows.map((r) => ({
+    id: r.id,
+    email: r.email,
+    source: r.source,
+    remark: r.remark,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  }));
+  return ok(safe);
 });
 
 // POST /api/temp-emails (generate new temp email)
+// body: { provider?: 'gptmail'|'duckmail'|'cloudflare', prefix?, domain?, password? }
 tempEmails.post('/', async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { prefix?: string; domain?: string };
-  const apiKey = await getApiKey(c.env.DB, c.env.GPTMAIL_API_KEY);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    provider?: string;
+    prefix?: string;
+    domain?: string;
+    password?: string;
+  };
+  const provider = body.provider || 'gptmail';
 
+  // ---- DuckMail (mail.tm) ----
+  if (provider === 'duckmail') {
+    const r = await duckmailGenerate(c.env, { prefix: body.prefix, password: body.password });
+    if (!r.ok || !r.mailbox) return badRequest(r.error ?? '生成临时邮箱失败');
+    const m = r.mailbox;
+    try {
+      await run(
+        c.env.DB,
+        `INSERT INTO temp_emails (email, source, duckmail_token, duckmail_account_id, duckmail_password)
+         VALUES (?, 'duckmail', ?, ?, ?)`,
+        [m.email, m.duckmail_token ?? '', m.duckmail_account_id ?? '', m.duckmail_password ?? '']
+      );
+    } catch {
+      return badRequest('邮箱已存在');
+    }
+    return ok({ email: m.email }, '临时邮箱创建成功');
+  }
+
+  // ---- cloudflare_temp_email (self-hosted) ----
+  if (provider === 'cloudflare') {
+    const r = await cloudflareGenerate(c.env, { prefix: body.prefix, domain: body.domain });
+    if (!r.ok || !r.mailbox) return badRequest(r.error ?? '生成临时邮箱失败');
+    const m = r.mailbox;
+    try {
+      await run(
+        c.env.DB,
+        `INSERT INTO temp_emails (email, source, cloudflare_address_id)
+         VALUES (?, 'cloudflare', ?)`,
+        [m.email, m.cloudflare_address_id ?? '']
+      );
+    } catch {
+      return badRequest('邮箱已存在');
+    }
+    return ok({ email: m.email }, '临时邮箱创建成功');
+  }
+
+  // ---- GPTMail (default) ----
+  const apiKey = await getApiKey(c.env.DB, c.env.GPTMAIL_API_KEY);
   let result;
   if (body.prefix || body.domain) {
-    result = await gptmailRequest('POST', '/api/generate-email', apiKey, { body });
+    result = await gptmailRequest('POST', '/api/generate-email', apiKey, {
+      body: { prefix: body.prefix, domain: body.domain },
+    });
   } else {
     result = await gptmailRequest('GET', '/api/generate-email', apiKey);
   }
@@ -98,6 +163,21 @@ tempEmails.get('/:id/messages', async (c) => {
   const existing = await first<TempEmailRow>(c.env.DB, 'SELECT * FROM temp_emails WHERE id = ?', [id]);
   if (!existing) return notFound('临时邮箱不存在');
 
+  // ---- DuckMail ----
+  if (existing.source === 'duckmail') {
+    const r = await duckmailList(c.env, existing);
+    if (!r.ok) return ok({ emails: [], error: r.error });
+    return ok({ emails: r.messages ?? [], count: (r.messages ?? []).length });
+  }
+
+  // ---- cloudflare ----
+  if (existing.source === 'cloudflare') {
+    const r = await cloudflareList(c.env, existing);
+    if (!r.ok) return ok({ emails: [], error: r.error });
+    return ok({ emails: r.messages ?? [], count: (r.messages ?? []).length });
+  }
+
+  // ---- GPTMail ----
   const apiKey = await getApiKey(c.env.DB, c.env.GPTMAIL_API_KEY);
   const result = await gptmailRequest('GET', '/api/emails', apiKey, {
     params: { email: existing.email },
@@ -110,12 +190,12 @@ tempEmails.get('/:id/messages', async (c) => {
   const data = result.data as { data?: { emails?: Array<Record<string, unknown>> } };
   const emails = data?.data?.emails ?? [];
 
-  const formatted = emails.map((msg) => ({
-    id: msg.id,
-    from: msg.from_address ?? '未知',
-    subject: msg.subject ?? '无主题',
+  const formatted: TempMessage[] = emails.map((msg) => ({
+    id: String(msg.id),
+    from: (msg.from_address as string) ?? '未知',
+    subject: (msg.subject as string) ?? '无主题',
     body_preview: typeof msg.content === 'string' ? msg.content.slice(0, 200) : '',
-    timestamp: msg.timestamp ?? 0,
+    timestamp: (msg.timestamp as number) ?? 0,
     has_html: !!msg.has_html,
   }));
 
@@ -130,6 +210,21 @@ tempEmails.get('/:id/messages/:messageId', async (c) => {
   const existing = await first<TempEmailRow>(c.env.DB, 'SELECT * FROM temp_emails WHERE id = ?', [id]);
   if (!existing) return notFound('临时邮箱不存在');
 
+  // ---- DuckMail ----
+  if (existing.source === 'duckmail') {
+    const r = await duckmailDetail(c.env, existing, messageId);
+    if (!r.ok || !r.detail) return notFound(r.error ?? '邮件不存在');
+    return ok(r.detail);
+  }
+
+  // ---- cloudflare ----
+  if (existing.source === 'cloudflare') {
+    const r = await cloudflareDetail(c.env, existing, messageId);
+    if (!r.ok || !r.detail) return notFound(r.error ?? '邮件不存在');
+    return ok(r.detail);
+  }
+
+  // ---- GPTMail ----
   const apiKey = await getApiKey(c.env.DB, c.env.GPTMAIL_API_KEY);
   const result = await gptmailRequest('GET', `/api/email/${messageId}`, apiKey);
 
@@ -139,15 +234,16 @@ tempEmails.get('/:id/messages/:messageId', async (c) => {
   const msg = data?.data;
   if (!msg) return notFound('邮件不存在');
 
-  return ok({
-    id: msg.id,
-    from: msg.from_address ?? '未知',
+  const detail: TempMessageDetail = {
+    id: String(msg.id),
+    from: (msg.from_address as string) ?? '未知',
     to: existing.email,
-    subject: msg.subject ?? '无主题',
-    body: msg.html_content ?? msg.content ?? '',
+    subject: (msg.subject as string) ?? '无主题',
+    body: (msg.html_content as string) ?? (msg.content as string) ?? '',
     body_type: msg.has_html ? 'html' : 'text',
-    timestamp: msg.timestamp ?? 0,
-  });
+    timestamp: (msg.timestamp as number) ?? 0,
+  };
+  return ok(detail);
 });
 
 export default tempEmails;

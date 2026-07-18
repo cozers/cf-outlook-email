@@ -65,6 +65,14 @@ export interface TempEmailRow {
   email: string;
   source: string;
   remark: string;
+  // Added in migration 0005. Per-mailbox credentials for multi-provider temp email.
+  // duckmail_*: mail.tm account token / id / password (token re-minted from password
+  // on expiry). cloudflare_address_id: id from a self-hosted cloudflare_temp_email
+  // instance (mail fetch uses the instance admin API, not a per-mailbox token).
+  duckmail_token: string;
+  duckmail_account_id: string;
+  duckmail_password: string;
+  cloudflare_address_id: string;
   created_at: string;
   updated_at: string;
 }

@@ -293,6 +293,31 @@ accounts.post('/batch', async (c) => {
     return ok(null, `已从 ${body.ids.length} 个账号移除 ${tagIds.length} 个标签`);
   }
 
+  // Refresh tokens for the selected accounts. Unlike the other actions this is
+  // NOT a SQL batch: each account needs a live token request via acquireToken
+  // (which persists rotation / scope / protocol and flips status active|error).
+  // Capped to stay well under Cloudflare's per-invocation subrequest budget.
+  if (body.action === 'refresh') {
+    const REFRESH_MAX = 40;
+    const targets = body.ids.slice(0, REFRESH_MAX);
+    const skipped = body.ids.length - targets.length;
+    const rows = await query<AccountRow>(
+      c.env.DB,
+      `SELECT * FROM accounts WHERE id IN (${inList(targets)})`,
+      targets
+    );
+    let okCount = 0;
+    let failCount = 0;
+    for (const acc of rows) {
+      const res = await acquireToken(c.env.DB, acc);
+      if (res.resolved) okCount++;
+      else failCount++;
+    }
+    let msg = `刷新完成：成功 ${okCount} 个，失败 ${failCount} 个`;
+    if (skipped > 0) msg += `，超出单次上限未处理 ${skipped} 个（请分批）`;
+    return ok({ ok: okCount, fail: failCount, skipped }, msg);
+  }
+
   return badRequest('未知操作');
 });
 
@@ -425,6 +450,22 @@ accounts.post('/:id/test', async (c) => {
     connected: false,
     error: result.error ?? 'Unknown error',
   }, '连接失败');
+});
+
+// POST /api/accounts/:id/refresh - refresh (rotate) this account's token now.
+// Same core as /test (acquireToken persists the rotated refresh_token / scope /
+// protocol and flips status), but phrased as an explicit "refresh token" action.
+accounts.post('/:id/refresh', async (c) => {
+  const id = parseInt(c.req.param('id'), 10);
+  const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [id]);
+  if (!acc) return notFound('账号不存在');
+
+  const result = await acquireToken(c.env.DB, acc);
+  if (result.resolved) {
+    const label = result.resolved.protocol === 'imap' ? 'IMAP' : 'Graph';
+    return ok({ refreshed: true, protocol: result.resolved.protocol }, `Token 已刷新（${label}）`);
+  }
+  return ok({ refreshed: false, error: result.error ?? 'Unknown error' }, `刷新失败：${result.error ?? '未知错误'}`);
 });
 
 export default accounts;

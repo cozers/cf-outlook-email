@@ -21,8 +21,8 @@ settings.get('/', async (c) => {
       data['login_password'] = '******';
     } else if (row.key === 'gptmail_api_key' || row.key === 'telegram_bot_token') {
       data[row.key] = row.value ? maskToken(row.value) : '';
-    } else if (row.key === 'webdav_backup_password') {
-      // Mask the stored WebDAV password; '******' signals "unchanged" on save.
+    } else if (row.key === 'webdav_backup_password' || row.key === 'cloudflare_admin_password') {
+      // Mask stored secrets; '******' signals "unchanged" on save.
       data[row.key] = row.value ? '******' : '';
     } else {
       // external_api_key is returned in full so the admin can copy it (page is behind login)
@@ -246,6 +246,32 @@ settings.put('/', async (c) => {
       [body.webdav_backup_password.trim()]
     );
     updated.push('WebDAV-password');
+  }
+
+  // Temp-email provider config (Cloudflare self-hosted instance + DuckMail base).
+  const tempProviderKeys: Record<string, string> = {
+    cloudflare_worker_domain: 'Cloudflare-实例地址',
+    cloudflare_email_domains: 'Cloudflare-邮箱域名',
+    duckmail_base_url: 'DuckMail-地址',
+  };
+  for (const [key, label] of Object.entries(tempProviderKeys)) {
+    if (body[key] !== undefined) {
+      await run(
+        c.env.DB,
+        `INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)`,
+        [key, String(body[key]).trim()]
+      );
+      updated.push(label);
+    }
+  }
+  // Cloudflare admin password: only when provided and not masked.
+  if (body.cloudflare_admin_password !== undefined && !body.cloudflare_admin_password.includes('*')) {
+    await run(
+      c.env.DB,
+      `INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('cloudflare_admin_password', ?, CURRENT_TIMESTAMP)`,
+      [body.cloudflare_admin_password.trim()]
+    );
+    updated.push('Cloudflare-管理员密码');
   }
 
   if (errors.length > 0) return badRequest(errors.join('；'));
