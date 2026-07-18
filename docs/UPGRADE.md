@@ -310,6 +310,40 @@ pnpm exec wrangler rollback [version-id]
 
 按时间倒序。每条标注**是否需要跑数据库迁移**——只有引入新迁移文件的那次才需要，其余 `wrangler deploy` 即可。
 
+### 7. 临时邮箱多服务商（DuckMail + Cloudflare）
+
+在原有 GPTMail 之外，新增两个临时邮箱服务商，生成时可在弹窗中选择：
+
+- **DuckMail**（mail.tm 协议，公共服务，**免配置**）：取域名 → 建账号 → 换 token 收信；token 过期用存储的密码自动重新获取。
+- **Cloudflare**（自建 `cloudflare_temp_email` 实例）：走实例 admin 接口建址 / 收信，解析原始 MIME 提取正文。
+- **顺带修复「点生成没反应」**：旧版生成直接 `await` 请求上游且无加载提示，上游慢/挂或未配 Key 时静默卡住；现改为弹窗生成，确定按钮显示「处理中…」。
+- **配置**：系统设置新增「临时邮箱服务商」卡片——Cloudflare 实例地址 / 管理员密码 / 邮箱域名、DuckMail 接口地址。
+- **影响文件**：新增 `src/tempmail.ts` / `migrations/0005_temp_email_providers.sql`；修改 `src/routes/tempEmails.ts`、`src/routes/settings.ts`、`src/types.ts`、`public/assets/app.js`。
+- **需要迁移**：✅ **是**。`0005` 给 `temp_emails` 加凭证列，部署前必须先跑：
+  ```bash
+  pnpm exec wrangler d1 migrations apply outlook-email-db --remote
+  ```
+- ⚠️ **安全**：DuckMail 账号密码 / token 明文存 D1（与项目现有 refresh_token 存储方式一致）。
+
+### 6. 账号 Token 刷新按钮（单个 + 批量）
+
+账号列表新增两处刷新入口（此前只能靠「测试」间接刷新）：
+
+- **单行「刷新」按钮**：`POST /api/accounts/:id/refresh`，刷新该账号 token 并提示走的是 Graph 还是 IMAP。
+- **批量栏「批量刷新」**：对选中账号逐个刷新，服务端单次上限 40 个（留足 Cloudflare 子请求预算），返回成功/失败计数。
+- 二者复用 `acquireToken`（刷新 + 持久化轮换后的 refresh_token / scope / 协议 / 状态），与设置页「立即刷新一批」的区别是**针对选中/点击的具体账号**，而非最久未刷的 N 个。
+- **影响文件**：`src/routes/accounts.ts`、`public/assets/app.js`
+- **需要迁移**：❌ 否，`wrangler deploy` 即可。
+
+### 5. WebDAV 自动备份
+
+- **改动**：新增 WebDAV 自动备份（手动 + 定时），把全部账号导出为文本上传到坚果云 / Nextcloud 等；保留最近 N 份，自动删旧（PROPFIND 列出 + DELETE）。
+- **触发**：手动 `POST /api/settings/webdav-backup-now`；定时挂在现有 Cron Trigger 上，按「间隔小时」闸门触发。另有 `POST /api/settings/webdav-test` 连接测试（PUT 探测文件再 DELETE）。
+- **配置**：系统设置「WebDAV 自动备份」卡片——开关 / 地址 / 用户名 / 密码 / 间隔 / 保留份数。
+- **影响文件**：新增 `src/webdav.ts`；修改 `src/routes/settings.ts`、`src/index.ts`、`public/assets/app.js`。
+- **需要迁移**：❌ 否，配置存现有 settings 表，`wrangler deploy` 即可。
+- ⚠️ **安全**：备份文件含**全部账号的明文密码与 refresh token**，请确保 WebDAV 目标私密。
+
 ### 4. 批量标签 + 每页条数下拉 + 收件箱全选
 
 三项使用体验改进（纯前端 + 后端 batch 接口，无新迁移）：
