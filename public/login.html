@@ -88,6 +88,17 @@
       border: 1px solid rgba(244,63,94,0.12);
     }
     .error-msg.show { display: block; }
+
+    .password-wrap { position: relative; }
+    .password-wrap .form-input { padding-right: 44px; }
+    .pwd-toggle {
+      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+      background: none; border: none; color: var(--text-dim); cursor: pointer;
+      width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+      border-radius: 8px; padding: 0;
+    }
+    .pwd-toggle:hover { color: var(--text); background: rgba(127,127,127,0.12); }
+    .pwd-toggle svg { width: 18px; height: 18px; }
   </style>
   <script>
     // Apply theme before render to prevent flash
@@ -115,7 +126,15 @@
     <form id="loginForm">
       <div class="form-group">
         <label class="form-label" for="password">登录密码</label>
-        <input type="password" class="form-input" id="password" placeholder="请输入密码" autofocus required>
+        <div class="password-wrap">
+          <input type="password" class="form-input" id="password" placeholder="请输入密码" autofocus required>
+          <button type="button" class="pwd-toggle" id="pwdToggle" title="显示/隐藏密码" aria-label="显示密码">
+            <svg id="pwdEyeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+          </button>
+        </div>
       </div>
       <button type="submit" class="login-btn" id="loginBtn">登 录</button>
     </form>
@@ -158,6 +177,23 @@
         else { showError(data.error?.message || '登录失败'); btn.disabled = false; btn.textContent = '登 录'; }
       } catch(e) { showError('网络错误，请重试'); btn.disabled = false; btn.textContent = '登 录'; }
     });
+
+    // Password visibility toggle
+    (function() {
+      var input = document.getElementById('password');
+      var btn = document.getElementById('pwdToggle');
+      var icon = document.getElementById('pwdEyeIcon');
+      if (!input || !btn || !icon) return;
+      var eyeOpen = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+      var eyeOff = '<path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
+      btn.addEventListener('click', function() {
+        var show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        icon.innerHTML = show ? eyeOff : eyeOpen;
+        btn.setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
+        btn.title = show ? '隐藏密码' : '显示密码';
+      });
+    })();
     function showError(msg) { errEl.textContent = msg; errEl.classList.add('show'); }
   </script>
 </body>
