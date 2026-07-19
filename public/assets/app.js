@@ -668,7 +668,7 @@ function showBatchTagModal(mode) {
   `, async () => {
     const tagIds = [...document.querySelectorAll('.batch-tag-check:checked')].map(cb => parseInt(cb.value));
     if (!tagIds.length) { toast('请至少选择一个标签', 'error'); return false; }
-    const action = mode === 'add' ? 'add-tags' : 'remove-tags';
+    const action = mode === 'add' ? 'add_tags' : 'remove_tags';
     const res = await api('/accounts/batch', { method: 'POST', body: JSON.stringify({ action, ids, tag_ids: tagIds }) });
     if (res?.success) { toast(res.message); clearSelection(); navigate('accounts'); return true; }
     toast(res?.error?.message || '操作失败', 'error'); return false;
